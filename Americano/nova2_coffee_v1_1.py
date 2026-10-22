@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """DOBOT Nova 2 single-arm Americano workflow.
 
-Keep nova2_points_v1_1.json beside this script and verify all taught routes.
+Use the shared nova2_points.json at the repository root and verify all taught routes.
   python nova2_coffee_v1_1.py --dry-run
   python nova2_coffee_v1_1.py --teach SAFE_CUP
   python nova2_coffee_v1_1.py --run
@@ -18,7 +18,8 @@ import time
 from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 
-POINT_FILE = Path(__file__).with_name("nova2_points_v1_1.json")
+POINT_FILE = Path(__file__).resolve().parent.parent / "nova2_points.json"
+WORKFLOW = "americano"
 
 POINT_NAMES = (
     "HOME", "SAFE_CUP", "CUP_PRE", "CUP_RECEIVE",
@@ -88,10 +89,10 @@ def validate_config(config):
         idx = config.get(key, 0)
         if type(idx) is not int or not (0 <= idx <= 9):
             raise ValueError(f"{key} must be an integer from 0 to 9.")
-    if config.get("safe_routes_physically_verified") is not True:
+    if config.get("safe_routes_physically_verified", {}).get(WORKFLOW) is not True:
         raise ValueError(
             "Verify every route at low speed in DobotStudio Pro, then set "
-            "safe_routes_physically_verified to true."
+            f"safe_routes_physically_verified.{WORKFLOW} to true."
         )
     return points
 
@@ -135,10 +136,12 @@ def teach(config, name):
             print("Point was not saved.")
             return
         config.setdefault("points", {})[name] = {"joint": angles, "pose": pose}
-        config["safe_routes_physically_verified"] = False
+        config["safe_routes_physically_verified"] = {
+            name: False for name in config.get("safe_routes_physically_verified", {})
+        }
         write_config(config)
         print(f"Saved to {POINT_FILE}")
-        print("Route verification was reset. Verify the routes again before running.")
+        print("All workflow route verifications were reset. Verify the routes again before running.")
 
 
 def operator_confirm(message):
@@ -188,7 +191,7 @@ PLAN = [
 def dry_run(config):
     print("Dry run: display the plan without connecting to the robot or peripherals.")
     print("A machine row near Y = 400 mm is not a verified collision boundary.")
-    print("Routes physically verified:", config.get("safe_routes_physically_verified", False))
+    print("Routes physically verified:", config.get("safe_routes_physically_verified", {}).get(WORKFLOW, False))
     for i, (action, target, note) in enumerate(PLAN, 1):
         data = (config.get("points", {}).get(target) or {}) if target else {}
         present = is_pose(data.get("joint" if action == "check_home" else "pose"))
@@ -242,10 +245,11 @@ def run(config, auto):
 
 
 def main():
+    config = read_config()
     parser = argparse.ArgumentParser(description="Nova 2 Americano workflow")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--dry-run", action="store_true", help="display the plan without the SDK or robot")
-    group.add_argument("--teach", choices=POINT_NAMES, metavar="POINT", help="record current pose and joint angles")
+    group.add_argument("--teach", choices=tuple(config["points"]), metavar="POINT", help="record current pose and joint angles")
     group.add_argument("--run", action="store_true", help="run with confirmation before each movement")
     parser.add_argument(
         "--auto", action="store_true",
@@ -254,7 +258,6 @@ def main():
     args = parser.parse_args()
     if args.auto and not args.run:
         parser.error("--auto requires --run")
-    config = read_config()
     if args.dry_run:
         dry_run(config)
     elif args.teach:

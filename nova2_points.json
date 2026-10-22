@@ -4,7 +4,10 @@
   "tool_index": 0,
   "speed_factor": 10,
   "home_joint_tolerance_deg": 3,
-  "safe_routes_physically_verified": false,
+  "safe_routes_physically_verified": {
+    "americano": false,
+    "ice_americano": false
+  },
   "environment_note": "机器排约位于Y方向400mm; 正负号、参考坐标系、机身外廓待测。SAFE_* 需在机器前方空旷一侧示教，不能按400mm自动推导。",
   "points": {
     "HOME": {
@@ -64,6 +67,18 @@
     "CUP_RECEIVE": {
       "joint": null,
       "pose": null
+    },
+    "SAFE_ICE": {
+      "pose": null,
+      "joint": null
+    },
+    "ICE_PRE": {
+      "pose": null,
+      "joint": null
+    },
+    "ICE_POS": {
+      "pose": null,
+      "joint": null
     },
     "SAFE_COFFEE": {
       "joint": null,
