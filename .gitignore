@@ -1,0 +1,4 @@
+
+.git-backup/
+__pycache__/
+*.pyc

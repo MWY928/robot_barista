@@ -1,0 +1,105 @@
+{
+  "robot_ip": "192.168.5.1",
+  "user_index": 0,
+  "tool_index": 0,
+  "speed_factor": 10,
+  "home_joint_tolerance_deg": 3,
+  "safe_routes_physically_verified": false,
+  "environment_note": "机器排约位于Y方向400mm; 正负号、参考坐标系、机身外廓待测。SAFE_* 需在机器前方空旷一侧示教，不能按400mm自动推导。",
+  "points": {
+    "HOME": {
+      "joint": [
+        144.0993,
+        -33.2876,
+        105.9923,
+        107.9046,
+        89.0426,
+        0.0009
+      ],
+      "pose": [
+        189.5318,
+        9.6691,
+        403.4223,
+        90.6091,
+        -0.0111,
+        55.0567
+      ]
+    },
+    "SAFE_CUP": {
+      "joint": [
+        163.7226,
+        46.0492,
+        65.0357,
+        67.7907,
+        165.4032,
+        0.0037
+      ],
+      "pose": [
+        427.6319,
+        -91.1744,
+        217.2459,
+        89.7166,
+        -1.0919,
+        -1.6779
+      ]
+    },
+    "CUP_PRE": {
+      "joint": [
+        141.2436,
+        49.8781,
+        61.3269,
+        66.1779,
+        140.897,
+        0.0047
+      ],
+      "pose": [
+        408.8596,
+        -265.1143,
+        205.1117,
+        88.3487,
+        -2.0353,
+        0.3759
+      ]
+    },
+    "CUP_RECEIVE": {
+      "joint": null,
+      "pose": null
+    },
+    "SAFE_COFFEE": {
+      "joint": null,
+      "pose": null
+    },
+    "COFFEE_PRE": {
+      "joint": null,
+      "pose": null
+    },
+    "COFFEE_POS": {
+      "joint": null,
+      "pose": null
+    },
+    "SAFE_WINDOW": {
+      "joint": null,
+      "pose": null
+    },
+    "WINDOW_PRE": {
+      "joint": null,
+      "pose": null
+    },
+    "WINDOW_PLACE": {
+      "joint": null,
+      "pose": null
+    },
+    "WINDOW_RELEASE": {
+      "joint": null,
+      "pose": null
+    },
+    "WINDOW_EXIT": {
+      "joint": null,
+      "pose": null
+    },
+    "WINDOW_CLEAR": {
+      "joint": null,
+      "pose": null
+    }
+  }
+}
