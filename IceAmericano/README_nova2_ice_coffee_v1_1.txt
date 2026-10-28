@@ -21,10 +21,11 @@ HOME -> SAFE_CUP -> CUP_PRE -> CUP_RECEIVE
 
 在项目根目录执行：
   python IceAmericano/nova2_ice_coffee_v1_1.py --dry-run
-  python IceAmericano/nova2_ice_coffee_v1_1.py --teach SAFE_ICE
-  python IceAmericano/nova2_ice_coffee_v1_1.py --teach ICE_PRE
-  python IceAmericano/nova2_ice_coffee_v1_1.py --teach ICE_POS
+  python teach_point.py SAFE_ICE
+  python teach_point.py ICE_PRE
+  python teach_point.py ICE_POS
 其他缺失点位同样示教，输入 SAVE 保存，不发送运动指令。
+独立点位工具可用 --list 列出点位；原脚本的 --teach POINT 仍兼容并转到共用实现。
 
 运行前核对 robot_ip、Tool/User、TCP 和负载。
 持杯时保持杯子直立的工具姿态，固定 J6 不能保证杯子直立。

@@ -4,21 +4,21 @@
 
 Use the shared nova2_points.json at the repository root and verify all taught routes.
   python nova2_ice_coffee_v1_1.py --dry-run
-  python nova2_ice_coffee_v1_1.py --teach SAFE_CUP
   python nova2_ice_coffee_v1_1.py --run
 """
 
 import argparse
-import json
-import math
-import re
-import socket
 import sys
 import time
-from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 
-POINT_FILE = Path(__file__).resolve().parent.parent / "nova2_points.json"
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from robot_common import connect, is_pose, read_config, read_vector, send_command
+from teach_point import teach_point
+
 WORKFLOW = "ice_americano"
 
 POINT_NAMES = (
@@ -28,45 +28,6 @@ POINT_NAMES = (
     "SAFE_WINDOW", "WINDOW_PRE", "WINDOW_PLACE",
     "WINDOW_RELEASE", "WINDOW_EXIT", "WINDOW_CLEAR",
 )
-
-
-def read_config():
-    with POINT_FILE.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def write_config(config):
-    with POINT_FILE.open("w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-
-def send_command(command, *args):
-    """Send a command and check the V3 response status."""
-    name = command.__name__
-    reply = command(*args)
-    match = re.fullmatch(r"\s*(-?\d+)\s*,\s*\{[^{}]*\}\s*,[^;]*;\s*", reply or "")
-    if match is None:
-        raise RuntimeError(f"{name} returned an invalid or incomplete response: {reply!r}")
-    code = int(match.group(1))
-    if code != 0:
-        raise RuntimeError(f"{name} failed with error code {code}: {reply}")
-    return reply
-
-
-def read_vector(command):
-    reply = send_command(command)
-    values_text = re.search(r"\{([^}]*)\}", reply).group(1)
-    values = [float(s) for s in values_text.split(",")]
-    if not is_pose(values):
-        raise RuntimeError(f"{command.__name__} must return six finite numbers: {reply}")
-    return values
-
-
-def is_pose(values):
-    return isinstance(values, list) and len(values) == 6 and all(
-        type(v) in (float, int) and math.isfinite(v) for v in values
-    )
 
 
 def validate_config(config):
@@ -96,53 +57,6 @@ def validate_config(config):
             f"safe_routes_physically_verified.{WORKFLOW} to true."
         )
     return points
-
-
-@contextmanager
-def connect(config, for_movement):
-    # Import only when connecting; offline commands do not need the SDK.
-    sdk_dir = Path(__file__).resolve().parent.parent / "TCP_IP_Python_V3"
-    if str(sdk_dir) not in sys.path:
-        sys.path.append(str(sdk_dir))
-    import dobot_api as robot_api
-
-    ip = config["robot_ip"]
-    with ExitStack() as stack:
-        previous_timeout = socket.getdefaulttimeout()
-        try:
-            socket.setdefaulttimeout(8)
-            dashboard = stack.enter_context(closing(robot_api.DobotApiDashboard(ip, 29999)))
-            move = stack.enter_context(closing(robot_api.DobotApiMove(ip, 30003))) if for_movement else None
-        except Exception as exc:
-            raise ConnectionError(f"Cannot connect to {ip}: {exc}") from exc
-        finally:
-            socket.setdefaulttimeout(previous_timeout)
-        dashboard.socket_dobot.settimeout(90)
-        if move is not None:
-            move.socket_dobot.settimeout(90)
-        send_command(dashboard.User, config.get("user_index", 0))
-        send_command(dashboard.Tool, config.get("tool_index", 0))
-        yield dashboard, move
-
-
-def teach(config, name):
-    with connect(config, for_movement=False) as (dashboard, _):
-        angles = read_vector(dashboard.GetAngle)
-        pose = read_vector(dashboard.GetPose)
-        print(f"waypoint to record: {name}")
-        print(f"  joint (deg): {angles}")
-        print(f"  pose (mm/deg): {pose}")
-        print("Confirm the Tool/User frames, TCP and payload are correct.")
-        if input("Type SAVE to save; any other input cancels: ").strip() != "SAVE":
-            print("Point was not saved.")
-            return
-        config.setdefault("points", {})[name] = {"joint": angles, "pose": pose}
-        config["safe_routes_physically_verified"] = {
-            name: False for name in config.get("safe_routes_physically_verified", {})
-        }
-        write_config(config)
-        print(f"Saved to {POINT_FILE}")
-        print("All workflow route verifications were reset. Verify the routes again before running.")
 
 
 def operator_confirm(message):
@@ -263,11 +177,10 @@ def run(config, auto):
 
 
 def main():
-    config = read_config()
     parser = argparse.ArgumentParser(description="Nova 2 iced Americano workflow")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--dry-run", action="store_true", help="display the plan without the SDK or robot")
-    group.add_argument("--teach", choices=tuple(config["points"]), metavar="POINT", help="record current pose and joint angles")
+    group.add_argument("--teach", metavar="POINT", help="alias for the shared teach_point.py POINT command")
     group.add_argument("--run", action="store_true", help="run with confirmation before each movement")
     parser.add_argument(
         "--auto", action="store_true",
@@ -276,10 +189,11 @@ def main():
     args = parser.parse_args()
     if args.auto and not args.run:
         parser.error("--auto requires --run")
+    config = read_config()
     if args.dry_run:
         dry_run(config)
     elif args.teach:
-        teach(config, args.teach)
+        teach_point(args.teach)
     else:
         run(config, args.auto)
 

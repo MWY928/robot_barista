@@ -24,8 +24,9 @@ DOBOT Nova 2 单臂美式咖啡搬运 V1.1
    保持仓库目录结构；SDK 位于根目录 TCP_IP_Python_V3，公共配置位于根目录 nova2_points.json。
 2. DobotStudio Pro 配置 TCP、Tool、User、负载以及机器 IP，切到兼容的 TCP/IP 模式。
 3. 一次性记录点位，如：
-       python Americano/nova2_coffee_v1_1.py --teach SAFE_CUP
+       python teach_point.py SAFE_CUP
    程序只读取当前位置，输入 SAVE 后存入 JSON，不发送运动指令。
+   python teach_point.py --list 可列出点位；原脚本 --teach POINT 仍兼容并转到共用实现。
    其他点位名称见根目录 nova2_points.json，未记录的点位需示教；不要按猜测填写坐标。
 4. 流程干运行（无需 SDK 或机器人）：
        python Americano/nova2_coffee_v1_1.py --dry-run
