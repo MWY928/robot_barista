@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from robot_common import connect, is_pose, read_config, read_vector, send_command
+from robot_common import connect, enable_robot, is_pose, read_config, read_vector, send_command
 from teach_point import teach_point
 
 WORKFLOW = "ice_americano"
@@ -148,7 +148,7 @@ def run(config, auto):
         # Verify the starting joints before enabling the robot.
         verify_home(dashboard, points, config.get("home_joint_tolerance_deg", 3))
         send_command(dashboard.SpeedFactor, config.get("speed_factor", 10))
-        send_command(dashboard.EnableRobot)
+        enable_robot(dashboard)
         for idx, (action, name, note) in enumerate(PLAN, 1):
             print(f"\n[{idx}/{len(PLAN)}] {note}")
             if action == "check_home":

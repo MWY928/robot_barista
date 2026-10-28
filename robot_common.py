@@ -1,5 +1,6 @@
 """Shared configuration and Dobot V3 connection helpers."""
 
+import argparse
 import json
 import math
 import os
@@ -61,6 +62,11 @@ def read_vector(command):
     return values
 
 
+def enable_robot(dashboard):
+    """Request robot enable and reject unsuccessful or incomplete responses."""
+    return send_command(dashboard.EnableRobot)
+
+
 def load_sdk():
     sdk_dir = str(ROOT / "TCP_IP_Python_V3")
     if sdk_dir not in sys.path:
@@ -99,3 +105,24 @@ def connect(config, for_movement=False):
         send_command(dashboard.User, config.get("user_index", 0))
         send_command(dashboard.Tool, config.get("tool_index", 0))
         yield dashboard, move
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Shared robot utilities")
+    parser.add_argument("--enable", action="store_true", required=True,
+                        help="send EnableRobot using the dashboard connection")
+    parser.add_argument("--config", type=Path, default=POINT_FILE,
+                        help="shared configuration path")
+    args = parser.parse_args()
+    config = read_config(args.config)
+    with connect(config, for_movement=False) as (dashboard, _):
+        enable_robot(dashboard)
+    print("Robot enable command accepted.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError, ImportError, EOFError, KeyboardInterrupt) as exc:
+        print(f"Enable failed: {exc}", file=sys.stderr)
+        sys.exit(1)

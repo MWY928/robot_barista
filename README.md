@@ -9,7 +9,7 @@ All recipes share [nova2_points.json](nova2_points.json) for waypoints and robot
 - `nova2_points.json`: shared waypoints, robot IP, Tool/User indices, speed, and route verification flags.
 - `teach_point.py`: shared waypoint teaching, including new point names.
 - `record_trajectory.py`: passive recording of timed joint and TCP samples for tasks such as latte art.
-- `robot_common.py`: shared configuration, connection, and command helpers.
+- `robot_common.py`: shared configuration, connection, command, and robot-enable helpers.
 - `trajectories/`: recorded takes, created when a recording is saved.
 - `Americano/` and `IceAmericano/`: recipe scripts and notes.
 - `TCP_IP_Python_V3/`: [Dobot SDK](https://github.com/Dobot-Arm/TCP-IP-Python-V3), including its license.
@@ -47,6 +47,14 @@ python Americano/nova2_coffee_v1_1.py --run
 ```
 
 Execution checks the HOME joints before enabling the robot and asks for `Y` before each movement. Add `--auto` to skip movement confirmations after verification; dispenser confirmations remain manual. Run only one recipe at a time.
+
+To send an enable request separately, using the shared robot settings:
+
+```powershell
+python robot_common.py --enable
+```
+
+This connects to the dashboard, selects the configured Tool/User, and sends `EnableRobot`. It does not issue movement commands. Recipe scripts call the same `enable_robot(dashboard)` helper after their HOME check. Point teaching and trajectory recording do not automatically enable the robot. The SDK's default enable/payload behavior is unchanged; verify the TCP and payload before use.
 
 ## Recording a trajectory
 
