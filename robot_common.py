@@ -1,4 +1,12 @@
-"""Shared configuration and Dobot V4 connection helpers (controller 4.6.x)."""
+"""用途：共享配置读写、官方 V4 SDK 加载和命令连接。
+主要入口：connect() 创建 dashboard/move 实例，退出 with 时断开；
+          send_command() 发送并检查回复；send_queued_command() 返回运动指令队列 ID；
+          enable_robot() 请求使能并检查回复，不等待反馈确认使能完成。
+根目录运行：
+  python robot_common.py --status          # 只读状态
+  python robot_common.py --request-control # 下使能时请求切换 TCP 控制模式
+  python robot_common.py --enable          # 使能，不发送运动指令
+"""
 
 import argparse
 import json
@@ -114,8 +122,8 @@ def load_sdk():
     try:
         from dobot_sdk.api.motion import CoordinateType, Motion
         from dobot_sdk.api.robot_control import RobotControl
+        from dobot_sdk.core.connection import DobotConnection
         from dobot_sdk.protocol.data_types import MyType
-        from v4_connection import CommandConnection
     except ModuleNotFoundError as exc:
         if exc.name == "dobot_sdk":
             raise ImportError(
@@ -124,7 +132,7 @@ def load_sdk():
                 "or install that package. See README.md."
             ) from exc
         raise
-    return SimpleNamespace(DobotConnection=CommandConnection, RobotControl=RobotControl,
+    return SimpleNamespace(DobotConnection=DobotConnection, RobotControl=RobotControl,
                            Motion=Motion, CoordinateType=CoordinateType, MyType=MyType)
 
 

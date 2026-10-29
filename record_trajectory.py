@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Passively record a timed joint/TCP trajectory from Dobot V4 feedback."""
+"""用途：通过 30004 反馈端口录制关节/TCP 轨迹，不使能、不发送运动指令。
+主要入口：FeedbackReader.read() 读取完整帧；capture() 采样；save_recording() 保存且不覆盖旧文件。
+根目录运行（先在机器人端准备好拖拽/示教模式，开始后 Ctrl+C 结束并保存）：
+  python record_trajectory.py pick_cup --duration 30 --rate 50
+输出：trajectories/pick_cup.json；每次录制使用新名称，避免覆盖。
+"""
 
 import argparse
 import json

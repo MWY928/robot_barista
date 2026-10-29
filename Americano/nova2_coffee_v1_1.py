@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""DOBOT Nova 2 segmented Americano workflow."""
+"""用途：执行热美式流程：接杯 → 咖啡 → 出杯 → HOME。
+主要入口：PLAN 定义顺序；check_trajectories()/dry_run() 离线检查/预览；
+          run() 使能并执行流程；wait_*_finished() 目前人工确认设备完成。
+根目录运行：
+  python Americano/nova2_coffee_v1_1.py --dry-run            # 离线预览
+  python Americano/nova2_coffee_v1_1.py --check-trajectories # 离线严格校验
+  python Americano/nova2_coffee_v1_1.py --check-steps        # 会运动：逐步试跑，允许未验证轨迹
+  python Americano/nova2_coffee_v1_1.py --run                # 会运动：执行已验证流程
+"""
 
 import sys
 import time

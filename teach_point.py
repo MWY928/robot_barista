@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Record a stationary waypoint or move the robot to a saved waypoint."""
+"""用途：示教保存静态点位，或移动到已保存点位。
+主要入口：teach_point() 读取当前关节/位姿，输入 SAVE 后保存，不发送运动指令；
+          move_point() 确认后使能，以 MovJ 移动并等待到位。
+根目录运行：
+  python teach_point.py HOME                 # 示教保存 HOME
+  python teach_point.py --list               # 离线列出点位
+  python teach_point.py --move HOME --speed 5 # 会运动：移动到已保存的 HOME
+"""
 
 import argparse
 import re

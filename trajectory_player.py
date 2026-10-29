@@ -1,4 +1,13 @@
-"""Shared, guarded playback of time-stamped Dobot V4 joint recordings."""
+"""用途：校验、对齐起点并回放已录制的 V4 轨迹。
+主要入口：
+  load_trajectory()：离线读取并校验轨迹，不连接机械臂。
+  single_trajectory()：连接、确认、使能并执行单段；align_only=True 只对齐起点。
+  TrajectoryPlayer.check_start()：只检查起点；ensure_start()：可能执行 MovL 对齐。
+  TrajectoryPlayer.play()：自动对齐、ServoJ 回放并等待实际到位。
+根目录运行（以下两条都会运动；--commissioning 允许试跑未验证轨迹）：
+  python trajectory_player.py pick_cup --commissioning --align-only
+  python trajectory_player.py pick_cup --commissioning
+"""
 
 import argparse
 import bisect

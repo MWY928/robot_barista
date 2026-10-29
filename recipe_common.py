@@ -1,4 +1,9 @@
-"""Offline inspection and command-line support for segmented recipes."""
+"""用途：两份咖啡配方共用的离线校验、命令行参数和人工确认。
+主要入口：inspect_workflow() 离线校验轨迹和段间衔接；recipe_arguments() 解析参数；
+          operator_confirm() 等待人工确认，本身不控制机械臂。
+本文件供配方导入；从根目录运行配方，例如：
+  python Americano/nova2_coffee_v1_1.py --check-trajectories # 离线检查，不运动
+"""
 
 import argparse
 

@@ -10,7 +10,6 @@ Python workflows for a DOBOT Nova 2 coffee workstation. Each recipe combines sha
 - `recipe_common.py`: offline workflow inspection and shared CLI helpers.
 - `Americano/`, `IceAmericano/`: recipe `PLAN` definitions, dispenser waits, and `check_trajectories()` functions.
 - `teach_point.py`, `robot_common.py`: shared point teaching, connections, and enabling.
-- `v4_connection.py`: project command transport for complete TCP sends/replies and bounded reply timeouts.
 - `trajectories/`: shared recordings and recording instructions.
 - `TCP-IP-Python-V4-feature-v4-optimization/`: downloaded [official V4 SDK](https://github.com/Dobot-Arm/TCP-IP-Python-V4/tree/feature/v4-optimization), containing `dobot_sdk/` and its license.
 
@@ -34,7 +33,7 @@ python -c "from robot_common import load_sdk; print(load_sdk().MyType.itemsize)"
 
 The expected feedback size is `1440` bytes.
 
-The project wraps the downloaded SDK's command connection to send each command completely and read through the terminating `;`, including replies split across TCP packets. The reply timeout covers the entire message. An interrupted or incomplete exchange invalidates the connection so its delayed response cannot be mistaken for the next command's acknowledgement. The existing timeout helper also updates the live socket, since this SDK's `set_timeout()` only changes stored defaults. Recording/playback use the project's complete-frame feedback reader. These workarounds leave the downloaded SDK files unchanged.
+Control and motion use the official SDK's `DobotConnection` directly. The timeout helper updates the live socket because this SDK's `set_timeout()` only changes stored defaults. Recording/playback read complete feedback frames on the separate `30004` connection using `FeedbackReader`.
 
 ### V3 to V4 interface changes
 
@@ -239,7 +238,7 @@ Put reusable device communication in a shared adapter module and call it from th
 4. Add handlers for new device actions. Replace manual `wait_*_finished()` functions with device startup, completion feedback, and timeout handling when integrating real dispensers.
 5. Run offline inspection and commission the complete route, including junction corrections and HOME connections.
 
-`tests/test_trajectory_player.py` contains hardware-free checks of program logic: loading, start alignment, unsafe-start rejection, confirmed arrival and V4 queue completion, single-segment playback, aborts, and workflow preflight. These checks use synthetic data, not your recorded trajectories; use the recipe scripts with `--check-trajectories` and `--check-steps` to inspect and physically validate your recorded files. Separate recording/teaching, enable, and native V4 SDK integration tests remain in their own files.
+`tests/test_trajectory_player.py` contains hardware-free checks of program logic: loading, start alignment, unsafe-start rejection, confirmed arrival and V4 queue completion, single-segment playback, aborts, and workflow preflight. These checks use synthetic data, not your recorded trajectories; use the recipe scripts with `--check-trajectories` and `--check-steps` to inspect and physically validate your recorded files. Separate recording/teaching and enable tests remain in their own files.
 
 Run the focused playback checks or the complete hardware-free suite:
 
