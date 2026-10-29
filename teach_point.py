@@ -10,10 +10,14 @@ from robot_common import POINT_FILE, connect, read_config, read_vector, write_co
 
 
 def teach_point(name, config_path=POINT_FILE):
+    # raise error when point name is illegal
     if re.fullmatch(r"[A-Z][A-Z0-9_]*", name) is None:
         raise ValueError("Point names must start with A-Z and contain only A-Z, 0-9 or _.")
+    # locate point config paths
     config_path = Path(config_path)
     config = read_config(config_path)
+
+    #read the point from the robot 
     print("Keep the robot stationary while reading. Check Tool/User, TCP and payload.")
     with connect(config, for_movement=False) as (dashboard, _):
         joint = read_vector(dashboard.GetAngle)
@@ -21,13 +25,14 @@ def teach_point(name, config_path=POINT_FILE):
     print(f"Waypoint: {name} ({'existing' if name in config.get('points', {}) else 'new'})")
     print(f"  joint (deg): {joint}")
     print(f"  pose (mm/deg): {pose}")
+    #saving points
     if input("Type SAVE to save; any other input cancels: ").strip() != "SAVE":
         print("Point was not saved.")
         return False
-    # Preserve unrelated config edits made while the operator was confirming.
+    #   Preserve unrelated config edits made while the operator was confirming.
     latest = read_config(config_path)
     for key in ("robot_ip", "user_index", "tool_index"):
-        if latest.get(key) != config.get(key):
+        if latest.get(key) != config.get(key):#check if other configs are match, if not match then cancle
             raise RuntimeError(f"{key} changed during teaching; point was not saved. Record again.")
     latest.setdefault("points", {}).setdefault(name, {}).update(joint=joint, pose=pose)
     latest["safe_routes_physically_verified"] = {

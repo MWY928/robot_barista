@@ -4,7 +4,7 @@ import contextlib
 import importlib.util
 import io
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import robot_common
 
@@ -55,22 +55,33 @@ class EnableTests(unittest.TestCase):
             if not home_ok:
                 raise RuntimeError("Robot is not at HOME")
 
+        player = Mock()
+        player.check_home.side_effect = home_check
+        player.limits = {"endpoint_timeout_s": 5}
+        player.play.side_effect = lambda trajectory: events.append("play")
+        feedback = Mock()
+        feedback.__enter__ = Mock(return_value=feedback)
+        feedback.__exit__ = Mock(return_value=False)
+        feedback.state.return_value = {"enable_status": 1}
+
         with patch.object(recipe, "connect", connection), \
-                patch.object(recipe, "validate_config", return_value={"TARGET": {"pose": [0] * 6}}), \
-                patch.object(recipe, "verify_home", home_check), \
-                patch.object(recipe, "PLAN", [("linear", "TARGET", "test")]), \
+                patch.object(recipe, "check_trajectories", return_value={"pick_cup": Mock()}), \
+                patch.object(recipe, "LiveFeedback", return_value=feedback), \
+                patch.object(recipe, "TrajectoryPlayer", return_value=player), \
+                patch.object(recipe, "PLAN", [("trajectory", "pick_cup", "test")]), \
                 contextlib.redirect_stdout(io.StringIO()):
+            config = {"points": {"HOME": {"pose": [0]*6, "joint": [0]*6}}}
             if not home_ok or not reply.startswith("0,"):
                 with self.assertRaises(RuntimeError):
-                    recipe.run({}, auto=True)
+                    recipe.run(config, auto=True)
             else:
-                recipe.run({}, auto=True)
+                recipe.run(config, auto=True)
         return events
 
     def test_recipes_check_home_then_enable_before_motion(self):
         for file in ("Americano/nova2_coffee_v1_1.py", "IceAmericano/nova2_ice_coffee_v1_1.py"):
             with self.subTest(file=file):
-                self.assertEqual(self.run_recipe(file), ["home", "speed", "enable", "move", "sync"])
+                self.assertEqual(self.run_recipe(file), ["home", "speed", "enable", "play"])
 
     def test_enable_error_or_incomplete_reply_prevents_motion(self):
         for file in ("Americano/nova2_coffee_v1_1.py", "IceAmericano/nova2_ice_coffee_v1_1.py"):

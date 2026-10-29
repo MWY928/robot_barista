@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""DOBOT Nova 2 single-arm iced Americano workflow.
+"""DOBOT Nova 2 segmented iced Americano workflow."""
 
-Use the shared nova2_points.json at the repository root and verify all taught routes.
-  python nova2_ice_coffee_v1_1.py --dry-run
-  python nova2_ice_coffee_v1_1.py --run
-"""
-
-import argparse
 import sys
 import time
 from pathlib import Path
@@ -16,53 +9,27 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from robot_common import connect, enable_robot, is_pose, read_config, read_vector, send_command
+from robot_common import connect, enable_robot, read_config, send_command
 from teach_point import teach_point
+from recipe_common import inspect_workflow, operator_confirm, recipe_arguments
+from trajectory_player import LiveFeedback, TrajectoryPlayer
 
-WORKFLOW = "ice_americano"
+WORKFLOW = 'ice_americano'
+POINT_NAMES = ("HOME",)
 
-POINT_NAMES = (
-    "HOME", "SAFE_CUP", "CUP_PRE", "CUP_RECEIVE",
-    "SAFE_ICE", "ICE_PRE", "ICE_POS",
-    "SAFE_COFFEE", "COFFEE_PRE", "COFFEE_POS",
-    "SAFE_WINDOW", "WINDOW_PRE", "WINDOW_PLACE",
-    "WINDOW_RELEASE", "WINDOW_EXIT", "WINDOW_CLEAR",
-)
-
-
-def validate_config(config):
-    points = config.get("points", {})
-    missing = []
-    for name in POINT_NAMES:
-        data = points.get(name) or {}
-        if not is_pose(data.get("pose")):
-            missing.append(f"{name}.pose")
-        if name == "HOME" and not is_pose(data.get("joint")):
-            missing.append(f"{name}.joint")
-    if missing:
-        raise ValueError("Teach or correct the following points:\n - " + "\n - ".join(missing))
-    sf = config.get("speed_factor", 10)
-    if type(sf) is not int or not (1 <= sf <= 100):
-        raise ValueError("speed_factor must be an integer from 1 to 100.")
-    tolerance = config.get("home_joint_tolerance_deg", 3)
-    if type(tolerance) not in (float, int) or not (0 < tolerance <= 10):
-        raise ValueError("home_joint_tolerance_deg must be in (0, 10]; 1-3 degrees is recommended.")
-    for key in ("user_index", "tool_index"):
-        idx = config.get(key, 0)
-        if type(idx) is not int or not (0 <= idx <= 9):
-            raise ValueError(f"{key} must be an integer from 0 to 9.")
-    if config.get("safe_routes_physically_verified", {}).get(WORKFLOW) is not True:
-        raise ValueError(
-            "Verify every route at low speed in DobotStudio Pro, then set "
-            f"safe_routes_physically_verified.{WORKFLOW} to true."
-        )
-    return points
-
-
-def operator_confirm(message):
-    print("\n" + message)
-    if input("Type Y to continue; any other input aborts: ").strip().upper() != "Y":
-        raise RuntimeError("Operator aborted the task. No further commands will be sent.")
+# Segments stop at station waiting points. Files are shared in nova2_points.json.
+PLAN = [
+    ('check_home', 'HOME', 'Verify the starting HOME pose and joints'),
+    ('entry', 'pick_cup', 'MovL from HOME to the first pick-cup sample'),
+    ('trajectory', 'pick_cup', 'Follow the shared cup-pickup trajectory'),
+    ('cup_signal', None, 'Wait for cup dispensing to finish'),
+    ('trajectory', 'cup_to_ice', 'Carry the cup to the ice/water outlet'),
+    ('ice_signal', None, 'Wait for ice and water dispensing to finish'),
+    ('trajectory', 'ice_to_coffee', 'Carry the cup from ice machine to coffee machine'),
+    ('coffee_signal', None, 'Wait for coffee dispensing to finish, then wait 2 seconds'),
+    ('trajectory', 'coffee_to_window', 'Place and release the cup, then withdraw the fixture'),
+    ('return_home', 'HOME', 'MovL from the cleared window position to HOME'),
+]
 
 
 def wait_cup_drop_finished():
@@ -84,124 +51,85 @@ def wait_coffee_finished():
     time.sleep(2.0)
 
 
-# Machine layout and all full-arm paths require physical verification.
-# Execute one segment at a time and wait for completion.
-PLAN = [
-    ("check_home", "HOME", "Verify the initial HOME joint angles without moving"),
-    ("linear", "SAFE_CUP", "Move from HOME to the cup dispenser corridor waypoint"),
-    ("linear", "CUP_PRE", "Approach the cup dispenser"),
-    ("linear", "CUP_RECEIVE", "Move to the cup receiving position"),
-    ("cup_signal", None, "Wait for cup dispensing to finish"),
-    ("linear", "CUP_PRE", "Retract from the cup receiving position"),
-    ("linear", "SAFE_CUP", "Return to the cup dispenser corridor waypoint"),
-    ("linear", "SAFE_ICE", "Follow the corridor to the ice machine waypoint"),
-    ("linear", "ICE_PRE", "Approach the ice and water outlet"),
-    ("linear", "ICE_POS", "Move to the ice and water receiving position"),
-    ("ice_signal", None, "Wait for both ice and water dispensing to finish"),
-    ("linear", "ICE_PRE", "Retract from the ice and water receiving position"),
-    ("linear", "SAFE_ICE", "Return to the ice machine corridor waypoint"),
-    ("linear", "SAFE_COFFEE", "Follow the corridor to the coffee machine waypoint"),
-    ("linear", "COFFEE_PRE", "Approach the coffee machine"),
-    ("linear", "COFFEE_POS", "Move to the espresso dispensing position"),
-    ("coffee_signal", None, "Wait for espresso dispensing to finish, then wait another 2 seconds"),
-    ("linear", "COFFEE_PRE", "Retract from the coffee dispensing position"),
-    ("linear", "SAFE_COFFEE", "Return to the coffee machine corridor waypoint"),
-    ("linear", "SAFE_WINDOW", "Follow the corridor to the serving window waypoint"),
-    ("linear", "WINDOW_PRE", "Approach the serving window"),
-    ("linear", "WINDOW_PLACE", "Place the cup at the serving window"),
-    ("linear", "WINDOW_RELEASE", "Lower the fixture to release support of the cup rim"),
-    ("linear", "WINDOW_EXIT", "Withdraw the fixture horizontally through the opening"),
-    ("linear", "WINDOW_CLEAR", "Move the fixture clear of the cup and window"),
-    ("linear", "SAFE_WINDOW", "Return to the serving window corridor waypoint"),
-    ("linear", "HOME", "Return to HOME along the verified route"),
-]
+def check_trajectories(config, require_verified=False):
+    """Check each segment and junction in this recipe's actual execution order."""
+    return inspect_workflow(config, PLAN, WORKFLOW, require_verified=require_verified)
 
 
 def dry_run(config):
-    print("Dry run: display the plan without connecting to the robot or peripherals.")
-    print("A machine row near Y = 400 mm is not a verified collision boundary.")
-    print("Routes physically verified:", config.get("safe_routes_physically_verified", {}).get(WORKFLOW, False))
-    for i, (action, target, note) in enumerate(PLAN, 1):
-        data = (config.get("points", {}).get(target) or {}) if target else {}
-        present = is_pose(data.get("joint" if action == "check_home" else "pose"))
-        state = (" [taught]" if present else " [not taught]") if target else ""
-        print(f"{i:02d}. {note} | {action} {target or ''}{state}")
+    print("Offline preview: no robot or dispenser connections.")
+    return inspect_workflow(config, PLAN, WORKFLOW, strict=False)
 
 
-def verify_home(dashboard, points, tolerance_deg):
-    current = read_vector(dashboard.GetAngle)
-    taught = points["HOME"]["joint"]
-    errors = [abs(a - b) for a, b in zip(current, taught)]
-    if any(e > tolerance_deg for e in errors):
-        raise RuntimeError(
-            f"Robot is not at HOME: current joints={current}, taught HOME={taught}. "
-            "Move to HOME manually in DobotStudio Pro before running."
-        )
-    print("Initial HOME joint angle check passed.")
-
-
-def run(config, auto):
-    points = validate_config(config)
-    print("All linear segments and full-arm/fixture/cup paths must be verified at low speed.")
-
+def run(config, auto=False, commissioning=False):
+    # Every file/junction is checked before connecting, enabling or moving.
+    trajectories = check_trajectories(config, require_verified=not commissioning)
+    home = config["points"]["HOME"]
+    if commissioning:
+        auto = False
+        operator_confirm("STEP CHECK MODE: the robot WILL MOVE. Check each segment and HOME connection at low speed.")
     with connect(config, for_movement=True) as (dashboard, move):
-        # Verify the starting joints before enabling the robot.
-        verify_home(dashboard, points, config.get("home_joint_tolerance_deg", 3))
-        send_command(dashboard.SpeedFactor, config.get("speed_factor", 10))
-        enable_robot(dashboard)
-        for idx, (action, name, note) in enumerate(PLAN, 1):
-            print(f"\n[{idx}/{len(PLAN)}] {note}")
-            if action == "check_home":
-                continue
-            if action == "cup_signal":
-                wait_cup_drop_finished()
-                continue
-            if action == "ice_signal":
-                wait_ice_water_finished()
-                continue
-            if action == "coffee_signal":
-                wait_coffee_finished()
-                continue
-            if action != "linear":
-                raise RuntimeError(f"Unknown action type: {action}")
-            if not auto:
-                operator_confirm(
-                    f"Ready to send MovL to {name}. Confirm the cup, fixture "
-                    "and all arm links have clearance along the entire path."
-                )
-            send_command(move.MovL, *points[name]["pose"])
-            send_command(move.Sync)
-            print("Completed:", name)
-        print("\nMotion sequence completed.")
-        # Closing connections does not guarantee that the robot has stopped.
+        with LiveFeedback(config) as feedback:
+            player = TrajectoryPlayer(dashboard, move, config, feedback)
+            player.use_frames(trajectories["pick_cup"])
+            player.check_home(home)
+            send_command(dashboard.SpeedFactor, config.get("speed_factor", 10))
+            enable_robot(dashboard)
+            # Wait briefly for enabled state to appear in fresh feedback.
+            deadline = time.monotonic()+player.limits["endpoint_timeout_s"]
+            while not feedback.state()["enable_status"]:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Enable request succeeded but enabled feedback did not arrive.")
+                time.sleep(0.02)
+            try:
+                for index, (action, name, note) in enumerate(PLAN, 1):
+                    print(f"\n[{index}/{len(PLAN)}] {note}")
+                    if action == "check_home":
+                        player.check_home(home)
+                    elif action == "cup_signal":
+                        wait_cup_drop_finished()
+                    elif action == "coffee_signal":
+                        wait_coffee_finished()
+                    elif action == "ice_signal":
+                        wait_ice_water_finished()
+                    elif action in ("entry", "trajectory", "return_home"):
+                        if not auto:
+                            operator_confirm(f"Ready: {note}. Confirm the complete arm/cup path is clear.")
+                        if action == "entry":
+                            # A planned, verified connection, independent of small-error start margins.
+                            player.check_home(home)
+                            player.move_linear(trajectories[name].first)
+                        elif action == "trajectory":
+                            player.play(trajectories[name])
+                        else:
+                            player.assert_target(trajectories["coffee_to_window"].last)
+                            player.move_linear(home)
+                    else:
+                        raise RuntimeError(f"Unknown workflow action: {action}")
+            except (Exception, KeyboardInterrupt):
+                player.stop_after_error()
+                raise
+    print("Workflow completed." if not commissioning else
+          "Step check completed. Review the results before marking takes and workflow as verified.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Nova 2 iced Americano workflow")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--dry-run", action="store_true", help="display the plan without the SDK or robot")
-    group.add_argument("--teach", metavar="POINT", help="alias for the shared teach_point.py POINT command")
-    group.add_argument("--run", action="store_true", help="run with confirmation before each movement")
-    parser.add_argument(
-        "--auto", action="store_true",
-        help="skip movement confirmations; cup, ice/water and espresso feedback still require manual confirmation",
-    )
-    args = parser.parse_args()
-    if args.auto and not args.run:
-        parser.error("--auto requires --run")
+    args = recipe_arguments(__doc__)
     config = read_config()
     if args.dry_run:
         dry_run(config)
+    elif args.check_trajectories:
+        check_trajectories(config)
     elif args.teach:
         teach_point(args.teach)
     else:
-        run(config, args.auto)
+        run(config, auto=args.auto, commissioning=args.check_steps)
 
 
 if __name__ == "__main__":
     try:
         main()
     except (OSError, ValueError, RuntimeError, ImportError, EOFError, KeyboardInterrupt) as exc:
-        print(f"\nTask aborted; no further commands will be sent: {exc}", file=sys.stderr)
-        print("Robot stop is not confirmed. Check its state and stop it if needed.", file=sys.stderr)
+        print(f"Task aborted: {exc}", file=sys.stderr)
+        print("Check the actual robot state; stopping is not guaranteed by disconnecting.", file=sys.stderr)
         sys.exit(1)

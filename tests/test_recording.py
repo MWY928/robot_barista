@@ -208,8 +208,8 @@ class TeachingTests(unittest.TestCase):
             connect.assert_not_called()
 
     def test_recipes_keep_their_plans_and_delegate_teaching(self):
-        for file, steps in (("Americano/nova2_coffee_v1_1.py", 21),
-                            ("IceAmericano/nova2_ice_coffee_v1_1.py", 27)):
+        for file, steps in (("Americano/nova2_coffee_v1_1.py", 8),
+                            ("IceAmericano/nova2_ice_coffee_v1_1.py", 10)):
             spec = importlib.util.spec_from_file_location("recipe_test", robot_common.ROOT / file)
             recipe = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(recipe)

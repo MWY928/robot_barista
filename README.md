@@ -1,97 +1,108 @@
 # Robot Barista
 
-Python workflows for a DOBOT Nova 2 coffee workstation. The robot carries a cup between dispensing stations and a serving window, following taught waypoints and waiting for each dispensing step to finish.
-
-All recipes share [nova2_points.json](nova2_points.json) for waypoints and robot settings. Each recipe script defines its own sequence in `PLAN`. Movement uses `MovL`, with `Sync` after each segment. Dispensers currently require manual operation and completion confirmation.
+Python workflows for a DOBOT Nova 2 coffee workstation. Each recipe combines shared recorded motion segments with dispenser completion checks. Only the planned HOME entry/return connections and small start corrections use `MovL`.
 
 ## Project layout
 
-- `nova2_points.json`: shared waypoints, robot IP, Tool/User indices, speed, and route verification flags.
-- `teach_point.py`: shared waypoint teaching, including new point names.
-- `record_trajectory.py`: passive recording of timed joint and TCP samples for tasks such as latte art.
-- `robot_common.py`: shared configuration, connection, command, and robot-enable helpers.
-- `trajectories/`: recorded takes, created when a recording is saved.
-- `Americano/` and `IceAmericano/`: recipe scripts and notes.
-- `TCP_IP_Python_V3/`: [Dobot SDK](https://github.com/Dobot-Arm/TCP-IP-Python-V3), including its license.
+- `nova2_points.json`: shared robot settings, HOME, trajectory file mapping, playback limits, and workflow verification flags.
+- `record_trajectory.py`: passive recording of timed joint/TCP feedback.
+- `trajectory_player.py`: recording validation, start alignment, continuous `ServoJ` playback, live tracking, and endpoint checks.
+- `recipe_common.py`: offline workflow inspection and shared CLI helpers.
+- `Americano/`, `IceAmericano/`: recipe `PLAN` definitions, dispenser waits, and `check_trajectories()` functions.
+- `teach_point.py`, `robot_common.py`: shared point teaching, connections, and enabling.
+- `trajectories/`: shared recordings and recording instructions.
+- `TCP_IP_Python_V3/`: bundled [Dobot SDK](https://github.com/Dobot-Arm/TCP-IP-Python-V3), including its license.
 
-## Setup and use
+## Setup
 
-Use Python 3.8 or later and install the SDK dependency:
+Use Python 3.8+ and install NumPy:
 
 ```powershell
 python -m pip install numpy
 ```
 
-Configure the TCP, payload, Tool/User frames, and compatible TCP/IP control mode in DobotStudio Pro. Set `robot_ip` in the shared JSON to the controller's actual address and check network connectivity. The scripts connect to dashboard port `29999` and movement port `30003`; controller firmware must be compatible with the bundled SDK.
+Configure the TCP, payload, Tool/User frames, compatible TCP/IP control mode, and actual `robot_ip`. Dashboard, motion, and live feedback use ports `29999`, `30003`, and `30004`. All three must work for recipe execution. Check controller compatibility with the bundled V3 `ServoJ` API before commissioning.
 
-Run commands from the repository root. The following uses one recipe as an example:
+Run commands from the repository root. To teach HOME or explicitly enable the robot:
 
 ```powershell
-# Preview the plan without connecting to hardware
-python Americano/nova2_coffee_v1_1.py --dry-run
-
-# Manually position the robot, then record a waypoint
 python teach_point.py HOME
+python robot_common.py --enable
 ```
 
-Teaching reads the current joints and tool pose without issuing movement commands. Keep the robot stationary while reading, then type `SAVE` to update the shared JSON. Use `python teach_point.py --list` to list points, or supply a new name such as `LATTE_START` to create one. Existing recipe `--teach POINT` commands also delegate to this shared implementation.
+Teaching reads a stationary pose and joints; enter `SAVE` to update the shared JSON. It resets all workflow verification flags. New waypoint names are supported, and `--list` lists existing points. Recipe `--teach POINT` commands remain aliases. Segmented recipes require only HOME in the point table; other existing taught points are preserved for future use.
 
-Each waypoint stores `pose = [x, y, z, rx, ry, rz]` in mm/degrees and `joint = [j1, ..., j6]` in degrees. Motion requires a pose for every waypoint used by the recipe; `HOME` also requires joint angles for the startup check. A `null` value means the point has not been taught. Keep Tool/User and TCP settings consistent between teaching and execution.
+## Record shared segments
 
-Before running, teach the required points and physically verify the entire route at low speed. Set `safe_routes_physically_verified[WORKFLOW]` to `true` in the JSON only for the verified recipe; `WORKFLOW` is defined in its script. Teaching any point resets all recipe verification flags. Manual changes to points or the workstation also require resetting the flags and verifying the affected routes again.
+Use one recording per movement between station waiting positions:
 
-Manually place the robot at `HOME`, then run:
+```powershell
+python record_trajectory.py pick_cup --duration 30 --rate 50
+```
+
+Set up teaching/drag mode and matching Tool/User/TCP using the robot controls first. Press Enter, wait for `Recording started`, then perform the movement. Start and end with the arm at rest. `Ctrl+C` finishes and saves early; the duration also limits the recording. Operate dispensers separately so their waiting time does not become part of a transport segment.
+
+Recordings default to `trajectories/NAME.json`. Existing files are not overwritten; use another take name and update the corresponding `trajectories` entry in the shared JSON. See [segment recording notes](trajectories/README.md) for the required names and boundaries.
+
+Each file includes time-stamped `joint` and `pose` samples, Tool/User definitions, capture status, and `replay_verified`. Time `t` is host receive time; the original controller timestamp is retained separately. `--rate` is a maximum retained rate, not a guaranteed sampling frequency. The recorder sends no enable, motion, or drag-mode commands.
+
+## Inspect, commission, and run
+
+The following uses one recipe script; the other scripts expose the same commands:
+
+```powershell
+# Preview the plan and report missing recordings without connecting
+python Americano/nova2_coffee_v1_1.py --dry-run
+
+# Strict offline checks; return an error for missing/invalid files or bad junctions
+python Americano/nova2_coffee_v1_1.py --check-trajectories
+
+# PHYSICAL MOTION: commission each step with explicit operator confirmation
+python Americano/nova2_coffee_v1_1.py --check-steps
+```
+
+`check_trajectories(config)` follows the recipe's actual order, checks every take and adjacent endpoints, and does not connect to hardware. It checks timestamps, gaps, frame metadata, controller errors, and configured motion limits. Each recipe keeps this function as its inspection entry point.
+
+`--check-steps` **moves the robot** and allows takes whose verification flags are still false. It retains file, margin, live-feedback, timing, and endpoint checks; it requires `Y` before each motion step and waits for manual dispenser confirmation. Use it to physically verify the full arm/fixture/cup path, cup orientation, and HOME connections. It never automatically marks a take or workflow as verified.
+
+After successful physical validation, set `replay_verified` to `true` in each validated recording and set `safe_routes_physically_verified[WORKFLOW]` to `true` in the shared JSON. Manually place the robot at HOME, then execute:
 
 ```powershell
 python Americano/nova2_coffee_v1_1.py --run
 ```
 
-Execution checks the HOME joints before enabling the robot and asks for `Y` before each movement. Add `--auto` to skip movement confirmations after verification; dispenser confirmations remain manual. Run only one recipe at a time.
+Normal runs check all required files and verification flags before connecting or enabling. `--run --auto` skips motion prompts only; dispenser confirmations remain manual. Run one recipe at a time. Rerecording or changing frames, limits, replay timing, hardware, or payload requires clearing the affected verification flags and commissioning again.
 
-To send an enable request separately, using the shared robot settings:
+## Playback behavior
 
-```powershell
-python robot_common.py --enable
-```
+`trajectory_settings` in the shared JSON applies to all recipes. Initial values are commissioning defaults, not validated workstation limits:
 
-This connects to the dashboard, selects the configured Tool/User, and sends `EnableRobot`. It does not issue movement commands. Recipe scripts call the same `enable_robot(dashboard)` helper after their HOME check. Point teaching and trajectory recording do not automatically enable the robot. The SDK's default enable/payload behavior is unchanged; verify the TCP and payload before use.
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `start_position_margin_mm` | 5 | Maximum position error allowed for a start correction |
+| `start_orientation_margin_deg` | 3 | Maximum rotation-angle error allowed for a start correction |
+| `start_joint_margin_deg` | 5 | Maximum error of any joint; revolutions are not wrapped |
+| `arrival_position_mm` / `arrival_orientation_deg` / `arrival_joint_deg` | 0.5 / 0.5 / 1 | Required arrival tolerances |
+| `playback_speed` | 0.25 | Recorded-time playback ratio, at most 1 |
+| `servo_period_s` | 0.04 | Fixed command period in seconds |
 
-## Recording a trajectory
+Before every segment, the player checks the actual live pose, joints, and coordinate frames. A start already within arrival tolerance needs no correction. A larger error within all three start margins triggers a `MovL` correction and another actual-state check. Any exceeded margin aborts the workflow.
 
-Use the trajectory recorder to capture a complete movement over time rather than a single stationary waypoint:
+Playback interpolates recorded joint samples onto the fixed command period and sends `ServoJ` targets with a timed schedule. It does not stop at every recorded point. A final segment check requires the arm to reach the recorded endpoint and settle. The initial HOME connection and final return are separately planned `MovL` moves, not large automatic start corrections.
 
-```powershell
-python record_trajectory.py latte_art_001 --duration 30 --rate 50
-```
+Live stale feedback, controller errors, changed frames, excessive tracking error, and missed command deadlines abort execution. After motion has been issued, an interruption triggers a best-effort `ResetRobot` stop request. Always check the actual robot state; network disconnection and stop acknowledgements do not guarantee a physical stop.
 
-Set up the TCP, payload, and teaching/drag mode using the robot controls first. Ensure the active Tool/User indices match `nova2_points.json` and that feedback is available in that mode. Press Enter in the terminal to connect, wait for `Recording started`, then perform the movement. Recording ends after the requested duration; `Ctrl+C` ends it early and saves the samples already captured. Use a new take name for each attempt.
+This is host-driven V3 playback, not a controller-native `StartPath` importer or a hard real-time system. Resampling and servo following can change the exact path between samples. Validate timing, response, and clearances on the actual robot. The pose convention is checked against dashboard feedback at HOME; no automatic frame conversion or collision avoidance is provided. For very sensitive pouring or latte-art work, further controller/timing validation is required. `speed_factor` is sent for ordinary motion; use `playback_speed` to set this player's timing rather than assuming the global override governs servo motion.
 
-The recorder only receives port `30004` feedback. It sends no commands to enable, move, or switch the robot into drag mode, and it does not change coordinate frames or shared waypoints. It can observe movement performed through the robot controls without running a recipe.
+## Extend the workstation
 
-Output defaults to `trajectories/latte_art_001.json`; use `--output PATH` to choose another file. Existing files are never overwritten. Each sample contains:
+1. Add recordings to the shared trajectory mapping, reusing a segment only when its frames, start/end arm states, fixture, payload, and cup state are appropriate.
+2. Copy a recipe directory under the repository root, select a unique `WORKFLOW`, and add its verification entry with value `false`.
+3. Arrange `trajectory` and dispenser-wait actions in `PLAN`, preserving the HOME entry and return. Keep the recipe's `check_trajectories()` wrapper so it checks the same order that runs.
+4. Add handlers for new device actions. Replace manual `wait_*_finished()` functions with device startup, completion feedback, and timeout handling when integrating real dispensers.
+5. Run offline inspection and commission the complete route, including junction corrections and HOME connections.
 
-- `t`: seconds since the first retained sample, measured at reception on the host.
-- `joint` and `pose`: actual joints and TCP pose from the same feedback packet.
-- `controller_timestamp_raw`: the original controller timestamp without unit conversion.
-- Robot mode, drag status, and error status reported by the controller.
-
-The file also stores frame indices and definitions, units, sample count, average rate, maximum sample gap, and the reason recording ended. Tool/User mismatches, frame changes, invalid packets, and network errors stop capture; an error after capturing data saves a partial take marked with `stop_reason: "error"`. No file is saved if no samples were captured.
-
-`--rate` is an upper bound for retained samples, not a guaranteed control frequency. Inspect the actual timestamps and gaps before processing a take. The pose is the controller's `tool_vector_actual`, without conversion; verify its frame convention against the controller before using it elsewhere.
-
-These files are recording data, not executable motion programs. Trajectory replay, resampling, and latte-art motion control are future integration steps; repeated `MovL`/`Sync` calls do not reproduce the recorded timing or smoothness.
-
-## Adding a recipe or device
-
-1. Copy an existing recipe script into a directory directly under the repository root, preserving the shared config and SDK paths.
-2. Choose a unique `WORKFLOW` name and add its entry to `safe_routes_physically_verified` with a value of `false`.
-3. Define the action order in `PLAN` and update `POINT_NAMES` to include the waypoints that recipe requires. Reuse existing points where the physical location and tool pose match; add new points to the shared JSON when needed.
-4. For new device actions, add a handler in `run()`. Replace or extend the `wait_*_finished()` placeholders with device commands, completion feedback, and timeouts when integrating real dispensers.
-5. Preview the plan, teach any new points, and verify every movement segment before enabling the recipe.
-
-Waypoint reuse does not verify new connections between points. `MovL` does not provide full-arm collision avoidance, and cup orientation must be checked along the route. Closing a connection or aborting the script does not guarantee the robot has stopped.
-
-Hardware-free checks for the shared teaching and recording tools:
+Hardware-free tests:
 
 ```powershell
 python -m unittest discover -s tests -v

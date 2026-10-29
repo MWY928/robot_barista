@@ -116,5 +116,46 @@
       "joint": null,
       "pose": null
     }
+  },
+  "trajectory_settings": {
+    "start_position_margin_mm": 5.0,
+    "start_orientation_margin_deg": 3.0,
+    "start_joint_margin_deg": 5.0,
+    "arrival_position_mm": 0.5,
+    "arrival_orientation_deg": 0.5,
+    "arrival_joint_deg": 1.0,
+    "feedback_max_age_s": 0.25,
+    "endpoint_timeout_s": 5.0,
+    "linear_timeout_s": 60.0,
+    "command_timeout_s": 2.0,
+    "settle_joint_speed_deg_s": 0.5,
+    "servo_period_s": 0.04,
+    "playback_speed": 0.25,
+    "max_command_lag_s": 0.04,
+    "max_tracking_error_deg": 5.0,
+    "max_sample_gap_s": 0.2,
+    "max_joint_speed_deg_s": 30.0,
+    "max_joint_acceleration_deg_s2": 90.0,
+    "max_cartesian_speed_mm_s": 100.0,
+    "max_orientation_speed_deg_s": 30.0,
+    "servo_lookahead_time": 50.0,
+    "servo_gain": 500.0
+  },
+  "trajectories": {
+    "pick_cup": {
+      "file": "trajectories/pick_cup.json"
+    },
+    "cup_to_coffee": {
+      "file": "trajectories/cup_to_coffee.json"
+    },
+    "cup_to_ice": {
+      "file": "trajectories/cup_to_ice.json"
+    },
+    "ice_to_coffee": {
+      "file": "trajectories/ice_to_coffee.json"
+    },
+    "coffee_to_window": {
+      "file": "trajectories/coffee_to_window.json"
+    }
   }
 }
