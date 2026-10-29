@@ -6,10 +6,10 @@ import re
 import sys
 from pathlib import Path
 
-from robot_common import POINT_FILE, connect, read_config, read_vector, write_config
+from robot_common import CONFIG_FILE, connect, read_config, read_vector, write_config
 
 
-def teach_point(name, config_path=POINT_FILE):
+def teach_point(name, config_path=CONFIG_FILE):
     # raise error when point name is illegal
     if re.fullmatch(r"[A-Z][A-Z0-9_]*", name) is None:
         raise ValueError("Point names must start with A-Z and contain only A-Z, 0-9 or _.")
@@ -48,7 +48,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("point", nargs="?", help="existing or new waypoint, e.g. HOME or LATTE_START")
     parser.add_argument("--list", action="store_true", help="list shared waypoint names without connecting")
-    parser.add_argument("--config", type=Path, default=POINT_FILE, help="shared configuration path")
+    parser.add_argument("--config", type=Path, default=CONFIG_FILE, help="shared configuration path")
     args = parser.parse_args()
     if args.list:
         if args.point:

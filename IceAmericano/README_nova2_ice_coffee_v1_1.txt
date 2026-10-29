@@ -1,6 +1,6 @@
 DOBOT Nova 2 - segmented iced Americano workflow
 
-Shared configuration: ../nova2_points.json
+Shared configuration: ../robot_config.json
 Player: ../trajectory_player.py
 
 Plan:

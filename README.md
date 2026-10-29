@@ -4,7 +4,7 @@ Python workflows for a DOBOT Nova 2 coffee workstation. Each recipe combines sha
 
 ## Project layout
 
-- `nova2_points.json`: shared robot settings, HOME, trajectory file mapping, playback limits, and workflow verification flags.
+- `robot_config.json`: shared robot settings, HOME, trajectory file mapping, playback limits, and workflow verification flags.
 - `record_trajectory.py`: passive recording of timed joint/TCP feedback.
 - `trajectory_player.py`: recording validation, start alignment, continuous `ServoJ` playback, live tracking, and endpoint checks.
 - `recipe_common.py`: offline workflow inspection and shared CLI helpers.
@@ -34,15 +34,49 @@ Teaching reads a stationary pose and joints; enter `SAVE` to update the shared J
 
 ## Record shared segments
 
-Use one recording per movement between station waiting positions:
+Recipe scripts already reserve the segment names and their execution order in `PLAN`. The shared JSON already maps these names to files:
+
+| Segment name | Default file | Movement to record |
+| --- | --- | --- |
+| `pick_cup` | `trajectories/pick_cup.json` | Open approach position to cup receiving position |
+| `cup_to_coffee` | `trajectories/cup_to_coffee.json` | Cup receiving position to coffee outlet |
+| `cup_to_ice` | `trajectories/cup_to_ice.json` | Cup receiving position to ice/water outlet |
+| `ice_to_coffee` | `trajectories/ice_to_coffee.json` | Ice/water outlet to coffee outlet |
+| `coffee_to_window` | `trajectories/coffee_to_window.json` | Coffee outlet through cup placement, release, and fixture withdrawal |
+
+Record the names needed by your recipe. Using a reserved name saves to its default file, so the existing recipe can find it without editing its script. Both recipes reference `pick_cup` and `coffee_to_window`; validate shared segments for each recipe's actual cup/payload conditions.
+
+For example, record the pickup segment:
 
 ```powershell
 python record_trajectory.py pick_cup --duration 30 --rate 50
 ```
 
-Set up teaching/drag mode and matching Tool/User/TCP using the robot controls first. Press Enter, wait for `Recording started`, then perform the movement. Start and end with the arm at rest. `Ctrl+C` finishes and saves early; the duration also limits the recording. Operate dispensers separately so their waiting time does not become part of a transport segment.
+1. Set up teaching/drag mode and matching Tool/User/TCP using the robot controls. Position the arm at the intended segment start.
+2. Run the command, press Enter, and wait for `Recording started` before moving.
+3. Perform the complete movement, including any withdrawal, corridor, or approach needed. Start and end with the arm at rest.
+4. Press `Ctrl+C` once the movement is complete, or let `--duration` end recording. Samples are saved automatically; no `SAVE` input is required for trajectories.
+5. Record the next segment from the preceding segment's endpoint, matching both tool pose and joint configuration. Operate the dispenser between recordings; the recipe's callback handles the equipment wait during execution.
+
+Repeat with the other required names, for example:
+
+```powershell
+python record_trajectory.py cup_to_ice --duration 30 --rate 50
+python record_trajectory.py ice_to_coffee --duration 30 --rate 50
+python record_trajectory.py coffee_to_window --duration 30 --rate 50
+```
+
+The first approach position must be reachable from HOME by the separately verified entry `MovL`. Finish `coffee_to_window` with the fixture clear of the cup/window so the planned return to HOME is possible.
 
 Recordings default to `trajectories/NAME.json`. Existing files are not overwritten; use another take name and update the corresponding `trajectories` entry in the shared JSON. See [segment recording notes](trajectories/README.md) for the required names and boundaries.
+
+For example, after recording `pick_cup_002`, keep the recipe's logical name and change only its file mapping:
+
+```json
+"pick_cup": {"file": "trajectories/pick_cup_002.json"}
+```
+
+Recording does not automatically register a new logical segment or mark it as verified. After recording, follow the inspection and commissioning steps below.
 
 Each file includes time-stamped `joint` and `pose` samples, Tool/User definitions, capture status, and `replay_verified`. Time `t` is host receive time; the original controller timestamp is retained separately. `--rate` is a maximum retained rate, not a guaranteed sampling frequency. The recorder sends no enable, motion, or drag-mode commands.
 
@@ -93,6 +127,32 @@ Playback interpolates recorded joint samples onto the fixed command period and s
 Live stale feedback, controller errors, changed frames, excessive tracking error, and missed command deadlines abort execution. After motion has been issued, an interruption triggers a best-effort `ResetRobot` stop request. Always check the actual robot state; network disconnection and stop acknowledgements do not guarantee a physical stop.
 
 This is host-driven V3 playback, not a controller-native `StartPath` importer or a hard real-time system. Resampling and servo following can change the exact path between samples. Validate timing, response, and clearances on the actual robot. The pose convention is checked against dashboard feedback at HOME; no automatic frame conversion or collision avoidance is provided. For very sensitive pouring or latte-art work, further controller/timing validation is required. `speed_factor` is sent for ordinary motion; use `playback_speed` to set this player's timing rather than assuming the global override governs servo motion.
+
+## Recipe and device integration hooks
+
+The hooks live in the recipe scripts: [Americano](Americano/nova2_coffee_v1_1.py) and [IceAmericano](IceAmericano/nova2_ice_coffee_v1_1.py). They currently use manual confirmation, so recording the trajectories alone does not start the dispensers automatically.
+
+| Location | Role / extension point |
+| --- | --- |
+| `PLAN` | Ordered `(action, segment_name, description)` entries; reserves each trajectory's position and each equipment-wait step |
+| `run()` | Dispatches actions to trajectory playback or a device callback; add a branch here for a new action type |
+| `wait_cup_drop_finished()` | Called after `pick_cup` reaches its endpoint; add cup-dispenser startup and completion/seating feedback here |
+| `wait_ice_water_finished()` | Ice recipe only; called after `cup_to_ice`; add ice/water startup and feedback confirming both have finished |
+| `wait_coffee_finished()` | Called after arrival at the coffee outlet; select the recipe's drink and wait for completion; retain or deliberately adjust the existing 2-second finishing delay |
+| `check_trajectories(config)` | Offline inspection in the same order as `PLAN`; keep this wrapper in each new recipe |
+
+For example, `('ice_signal', None, '...')` in `PLAN` reaches the `ice_signal` branch in `run()`, which calls `wait_ice_water_finished()`. The preceding trajectory must complete and pass its endpoint check before this callback runs. Callback failures abort the workflow before the next segment.
+
+When replacing a manual callback, send the device start command, wait for actual completion with a bounded timeout, and raise an exception on failure. The following shows the integration pattern; `ice_machine` and its methods are placeholders for your device adapter, not bundled APIs:
+
+```python
+def wait_ice_water_finished():
+    ice_machine.start_ice_water()
+    if not ice_machine.wait_until_finished(timeout=30):
+        raise RuntimeError("Ice/water dispensing did not finish in time")
+```
+
+Put reusable device communication in a shared adapter module and call it from the recipe callbacks. Equipment waits remain outside the recorded motion files.
 
 ## Extend the workstation
 

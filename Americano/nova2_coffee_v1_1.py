@@ -17,7 +17,7 @@ from trajectory_player import LiveFeedback, TrajectoryPlayer
 WORKFLOW = 'americano'
 POINT_NAMES = ("HOME",)
 
-# Segments stop at station waiting points. Files are shared in nova2_points.json.
+# Segments stop at station waiting points. Files are shared in robot_config.json.
 PLAN = [
     ('check_home', 'HOME', 'Verify the starting HOME pose and joints'),
     ('entry', 'pick_cup', 'MovL from HOME to the first pick-cup sample'),

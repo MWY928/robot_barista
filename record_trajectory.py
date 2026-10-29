@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from robot_common import POINT_FILE, ROOT, is_pose, load_sdk, read_config, validate_connection_config
+from robot_common import CONFIG_FILE, ROOT, is_pose, load_sdk, read_config, validate_connection_config
 
 FEEDBACK_PORT = 30004
 MAGIC = 0x123456789ABCDEF
@@ -167,7 +167,7 @@ def main():
     parser.add_argument("--duration", type=float, default=30, help="maximum recording time, seconds (default: 30)")
     parser.add_argument("--rate", type=float, default=50, help="maximum retained samples/second (default: 50)")
     parser.add_argument("--timeout", type=float, default=2, help="feedback timeout, seconds (default: 2)")
-    parser.add_argument("--config", type=Path, default=POINT_FILE)
+    parser.add_argument("--config", type=Path, default=CONFIG_FILE)
     parser.add_argument("--output", type=Path, help="output JSON; default: trajectories/NAME.json")
     args = parser.parse_args()
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", args.name) is None:

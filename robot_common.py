@@ -12,15 +12,15 @@ from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-POINT_FILE = ROOT / "nova2_points.json"
+CONFIG_FILE = ROOT / "robot_config.json"
 
 
-def read_config(path=POINT_FILE):
+def read_config(path=CONFIG_FILE):
     with Path(path).open(encoding="utf-8") as f:
         return json.load(f)
 
 
-def write_config(config, path=POINT_FILE):
+def write_config(config, path=CONFIG_FILE):
     """Replace a config atomically so a failed write preserves the old file."""
     path = Path(path)
     temp_path = None
@@ -111,7 +111,7 @@ def main():
     parser = argparse.ArgumentParser(description="Shared robot utilities")
     parser.add_argument("--enable", action="store_true", required=True,
                         help="send EnableRobot using the dashboard connection")
-    parser.add_argument("--config", type=Path, default=POINT_FILE,
+    parser.add_argument("--config", type=Path, default=CONFIG_FILE,
                         help="shared configuration path")
     args = parser.parse_args()
     config = read_config(args.config)
