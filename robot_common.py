@@ -1,15 +1,16 @@
-"""Shared configuration and Dobot V3 connection helpers."""
+"""Shared configuration and Dobot V4 connection helpers (controller 4.6.x)."""
 
 import argparse
 import json
 import math
 import os
 import re
-import socket
 import sys
 import tempfile
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import ExitStack, contextmanager
+from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / "robot_config.json"
@@ -42,9 +43,13 @@ def is_pose(values):
     )
 
 
-def send_command(command, *args):
+def send_command(command, *args, **kwargs):
     name = command.__name__
-    reply = command(*args)
+    try:
+        reply = command(*args, **kwargs)
+    except Exception as exc:
+        # V4 SDK connection exceptions do not inherit from OSError.
+        raise RuntimeError(f"{name} command failed: {exc}") from exc
     match = re.fullmatch(r"\s*(-?\d+)\s*,\s*\{[^{}]*\}\s*,[^;]*;\s*", reply or "")
     if match is None:
         raise RuntimeError(f"{name} returned an invalid or incomplete response: {reply!r}")
@@ -52,6 +57,33 @@ def send_command(command, *args):
     if code != 0:
         raise RuntimeError(f"{name} failed with error code {code}: {reply}")
     return reply
+
+
+def send_queued_command(command, *args, **kwargs):
+    """Return the V4 queue ID; an acknowledgement alone is not arrival."""
+    reply = send_command(command, *args, **kwargs)
+    result = re.search(r"\{\s*(\d+)\s*\}", reply)
+    if result is None:
+        raise RuntimeError(f"{command.__name__} did not return a V4 queue ID: {reply}")
+    return int(result.group(1))
+
+
+@contextmanager
+def command_timeout(api, seconds):
+    """Temporarily change the shared V4 command connection's receive timeout."""
+    connection = api.connection
+    # The SDK exposes set_timeout(), but currently has no public timeout getter.
+    previous = connection._receive_timeout
+    command_socket = connection._socket
+    previous_socket_timeout = command_socket.gettimeout()
+    connection.set_timeout(receive_timeout=seconds)
+    # In this SDK set_timeout() only stores defaults, even after connecting.
+    command_socket.settimeout(seconds)
+    try:
+        yield
+    finally:
+        connection.set_timeout(receive_timeout=previous)
+        command_socket.settimeout(previous_socket_timeout)
 
 
 def read_vector(command):
@@ -67,12 +99,33 @@ def enable_robot(dashboard):
     return send_command(dashboard.EnableRobot)
 
 
+@lru_cache(maxsize=1)
 def load_sdk():
-    sdk_dir = str(ROOT / "TCP_IP_Python_V3")
-    if sdk_dir not in sys.path:
-        sys.path.insert(0, sdk_dir)
-    import dobot_api
-    return dobot_api
+    """Load the V4 feature/v4-optimization SDK, locally unpacked or installed."""
+    candidates = [ROOT / "TCP_IP_Python_V4", ROOT / "TCP-IP-Python-V4"]
+    candidates.extend(sorted(path for path in ROOT.glob("TCP-IP-Python-V4-*") if path.is_dir()))
+    for candidate in candidates:
+        roots = [candidate, *sorted(candidate.glob("*/"))]
+        sdk_root = next((path for path in roots if (path / "dobot_sdk" / "__init__.py").is_file()), None)
+        if sdk_root is not None:
+            if str(sdk_root) not in sys.path:
+                sys.path.insert(0, str(sdk_root))
+            break
+    try:
+        from dobot_sdk.api.motion import CoordinateType, Motion
+        from dobot_sdk.api.robot_control import RobotControl
+        from dobot_sdk.protocol.data_types import MyType
+        from v4_connection import CommandConnection
+    except ModuleNotFoundError as exc:
+        if exc.name == "dobot_sdk":
+            raise ImportError(
+                "V4 SDK not found. Unpack Dobot-Arm/TCP-IP-Python-V4 "
+                "(feature/v4-optimization, containing dobot_sdk/) in the project root, "
+                "or install that package. See README.md."
+            ) from exc
+        raise
+    return SimpleNamespace(DobotConnection=CommandConnection, RobotControl=RobotControl,
+                           Motion=Motion, CoordinateType=CoordinateType, MyType=MyType)
 
 
 def validate_connection_config(config):
@@ -85,36 +138,50 @@ def validate_connection_config(config):
 
 
 @contextmanager
-def connect(config, for_movement=False):
+def connect(config, for_movement=False, *, select_frames=True):
     validate_connection_config(config)
     sdk = load_sdk()
     ip = config["robot_ip"]
     with ExitStack() as stack:
-        previous_timeout = socket.getdefaulttimeout()
+        connection = sdk.DobotConnection(ip, 29999)
+        stack.callback(connection.disconnect)
+        connection.set_timeout(connect_timeout=8, receive_timeout=90)
         try:
-            socket.setdefaulttimeout(8)
-            dashboard = stack.enter_context(closing(sdk.DobotApiDashboard(ip, 29999)))
-            move = stack.enter_context(closing(sdk.DobotApiMove(ip, 30003))) if for_movement else None
+            connection.connect()
         except Exception as exc:
             raise ConnectionError(f"Cannot connect to {ip}: {exc}") from exc
-        finally:
-            socket.setdefaulttimeout(previous_timeout)
-        dashboard.socket_dobot.settimeout(90)
-        if move is not None:
-            move.socket_dobot.settimeout(90)
-        send_command(dashboard.User, config.get("user_index", 0))
-        send_command(dashboard.Tool, config.get("tool_index", 0))
+        # V4 sends both control and motion through 29999, using one connection/lock.
+        dashboard = sdk.RobotControl(connection)
+        move = sdk.Motion(connection) if for_movement else None
+        if select_frames:
+            send_command(dashboard.User, config.get("user_index", 0))
+            send_command(dashboard.Tool, config.get("tool_index", 0))
         yield dashboard, move
 
 
 def main():
     parser = argparse.ArgumentParser(description="Shared robot utilities")
-    parser.add_argument("--enable", action="store_true", required=True,
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--enable", action="store_true",
                         help="send EnableRobot using the dashboard connection")
+    action.add_argument("--status", action="store_true",
+                        help="read RobotMode/GetErrorID without selecting frames or enabling")
+    action.add_argument("--request-control", action="store_true",
+                        help="request V4 TCP control mode while the robot is disabled")
     parser.add_argument("--config", type=Path, default=CONFIG_FILE,
                         help="shared configuration path")
     args = parser.parse_args()
     config = read_config(args.config)
+    if args.status or args.request_control:
+        with connect(config, for_movement=False, select_frames=False) as (dashboard, _):
+            with command_timeout(dashboard, 5):
+                if args.request_control:
+                    print("RequestControl reply:", send_command(dashboard.RequestControl))
+                else:
+                    # GetErrorID can contain nested lists; preserve the raw diagnostic reply.
+                    print("RobotMode reply:", dashboard.RobotMode())
+                    print("GetErrorID reply:", dashboard.GetErrorID())
+        return
     with connect(config, for_movement=False) as (dashboard, _):
         enable_robot(dashboard)
     print("Robot enable command accepted.")
@@ -124,5 +191,5 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, ValueError, RuntimeError, ImportError, EOFError, KeyboardInterrupt) as exc:
-        print(f"Enable failed: {exc}", file=sys.stderr)
+        print(f"Robot operation failed: {exc}", file=sys.stderr)
         sys.exit(1)

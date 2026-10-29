@@ -1,4 +1,4 @@
-"""Shared, guarded playback of time-stamped Dobot V3 joint recordings."""
+"""Shared, guarded playback of time-stamped Dobot V4 joint recordings."""
 
 import argparse
 import bisect
@@ -11,9 +11,10 @@ import threading
 import time
 from pathlib import Path
 
-from record_trajectory import FEEDBACK_PORT, FeedbackReader, frame_values
-from robot_common import (CONFIG_FILE, ROOT, connect, enable_robot, is_pose, load_sdk,
-                          read_config, read_vector, send_command, validate_connection_config)
+from record_trajectory import FEEDBACK_PORT, RECORDING_SOURCE, FeedbackReader, frame_values
+from robot_common import (CONFIG_FILE, ROOT, command_timeout, connect, enable_robot, is_pose,
+                          load_sdk, read_config, read_vector, send_command,
+                          send_queued_command, validate_connection_config)
 
 # Commission these values on the actual workstation before production use.
 DEFAULT_LIMITS = {
@@ -49,7 +50,7 @@ def limits_for(config):
         if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
             raise ValueError(f"trajectory_settings.{key} must be a positive finite number.")
     if not 0.02 <= limits["servo_period_s"] <= 0.1:
-        raise ValueError("servo_period_s must be between 0.02 and 0.1 for the bundled V3 SDK.")
+        raise ValueError("servo_period_s must be between 0.02 and 0.1 for this V4 player.")
     if limits["playback_speed"] > 1:
         raise ValueError("playback_speed must be <= 1 (no faster than the recorded timing).")
     if limits["max_command_lag_s"] > limits["servo_period_s"]:
@@ -142,8 +143,8 @@ def load_trajectory(name, config, require_verified=False):
         data = json.load(f)
     if not isinstance(data, dict):
         raise ValueError(f"{name}: recording must be a JSON object.")
-    if data.get("schema_version") != 1 or data.get("source") != "dobot_v3_feedback_30004":
-        raise ValueError(f"{name}: expected a schema-1 V3 feedback recording.")
+    if data.get("schema_version") != 1 or data.get("source") != RECORDING_SOURCE:
+        raise ValueError(f"{name}: expected a schema-1 V4 feedback recording; rerecord V3 takes on V4.")
     if data.get("stop_reason") not in ("duration", "interrupted") or data.get("error") is not None:
         raise ValueError(f"{name}: failed/partial-error recordings cannot be replayed.")
     check_frames(data.get("feedback_frames"), config)
@@ -236,22 +237,24 @@ class LiveFeedback:
             while not self.stopping.is_set():
                 self.socket.settimeout(self.max_age)
                 frame = self.reader.read()
-                current = int(frame["time_stamp"])
+                current = int(frame["TimeStamp"])
                 if timestamp is not None and current < timestamp:
                     raise RuntimeError("Live controller timestamp moved backwards.")
                 if current == timestamp:
                     continue  # Duplicates must not make an old state appear fresh.
                 timestamp = current
                 joint, pose, frames = frame_values(frame, self.config)
-                velocity = frame["qd_actual"].tolist()
+                velocity = frame["QDActual"].tolist()
                 if not is_pose(velocity):
                     raise ValueError("Live feedback contains invalid joint velocities.")
                 state = {"joint": joint, "pose": pose, "frames": frames,
                          "joint_velocity": velocity,
                          "received_at": time.monotonic(),
-                         "error_status": int(frame["error_status"]),
-                         "enable_status": int(frame["enable_status"]),
-                         "drag_status": int(frame["drag_status"])}
+                         "error_status": int(frame["ErrorStatus"]),
+                         "enable_status": int(frame["EnableStatus"]),
+                         "drag_status": int(frame["DragStatus"]),
+                         "current_command_id": int(frame["CurrentCommandId"]),
+                         "running_status": int(frame["RunningStatus"])}
                 with self.condition:
                     self.latest = state
                     self.condition.notify_all()
@@ -320,13 +323,18 @@ class TrajectoryPlayer:
         if not within(errors, self.limits, arrival=True):
             raise RuntimeError("Expected transition start was not reached: " + describe_errors(errors))
 
-    def wait_for_target(self, target, after=0.0, timeout=None):
+    def wait_for_target(self, target, after=0.0, timeout=None, command_id=None):
         deadline = time.monotonic()+(timeout or self.limits["endpoint_timeout_s"])
         while True:
             state = self.state()
             errors = state_errors(state, target)
             settled = max(map(abs, state["joint_velocity"])) <= self.limits["settle_joint_speed_deg_s"]
-            if state["received_at"] >= after and settled and within(errors, self.limits, arrival=True):
+            # V4 has no Sync(): require the issued command to have executed and
+            # motion to be idle, as well as checking fresh actual joints/TCP.
+            queue_finished = (command_id is None or
+                              (state["current_command_id"] >= command_id and not state["running_status"]))
+            if (state["received_at"] >= after and queue_finished and settled and
+                    within(errors, self.limits, arrival=True)):
                 return
             if time.monotonic() >= deadline:
                 raise RuntimeError("Endpoint was not reached: " + describe_errors(errors))
@@ -336,15 +344,13 @@ class TrajectoryPlayer:
         self.state()
         started = time.monotonic()
         self.motion_started = True
-        original_timeout = self.move.socket_dobot.gettimeout()
-        self.move.socket_dobot.settimeout(self.limits["command_timeout_s"])
-        try:
-            send_command(self.move.MovL, *target["pose"])
-            self.wait_for_target(target, after=started, timeout=self.limits["linear_timeout_s"])
-            send_command(self.move.Sync)
+        with command_timeout(self.move, self.limits["command_timeout_s"]):
+            command_id = send_queued_command(
+                self.move.MovL, target["pose"], load_sdk().CoordinateType.CARTESIAN,
+                user=self.config.get("user_index", 0), tool=self.config.get("tool_index", 0), cp=0)
+            self.wait_for_target(target, after=started, timeout=self.limits["linear_timeout_s"],
+                                 command_id=command_id)
             self.assert_target(target)
-        finally:
-            self.move.socket_dobot.settimeout(original_timeout)
 
     def check_start(self, trajectory, require_enabled=False):
         """Read live state and reject mismatched frames or excessive start error."""
@@ -369,10 +375,8 @@ class TrajectoryPlayer:
         self.ensure_start(trajectory)
         speed, period = self.limits["playback_speed"], self.limits["servo_period_s"]
         count = math.ceil(trajectory.duration / speed / period)
-        original_timeout = self.move.socket_dobot.gettimeout()
-        self.move.socket_dobot.settimeout(period+self.limits["max_command_lag_s"])
         started = time.monotonic()
-        try:
+        with command_timeout(self.move, period+self.limits["max_command_lag_s"]):
             for index in range(count):
                 deadline = started+index*period
                 delay = deadline-time.monotonic()
@@ -387,35 +391,26 @@ class TrajectoryPlayer:
                     raise RuntimeError("Trajectory tracking error exceeded the joint margin.")
                 target = trajectory.joint_at((index+1)*period*speed)
                 self.motion_started = True
-                send_command(self.move.ServoJ, *target, period,
-                             self.limits["servo_lookahead_time"], self.limits["servo_gain"])
+                command_id = send_queued_command(
+                    self.move.ServoJ, target, t=period,
+                    aheadtime=self.limits["servo_lookahead_time"], gain=self.limits["servo_gain"])
                 if time.monotonic()-deadline > period+self.limits["max_command_lag_s"]:
                     raise RuntimeError("ServoJ acknowledgement was too late.")
             # Let the last servo interval finish, then check actual state once per segment.
             delay = started+count*period-time.monotonic()
             if delay > 0:
                 time.sleep(delay)
-        finally:
-            self.move.socket_dobot.settimeout(original_timeout)
-        self.wait_for_target(trajectory.last, after=time.monotonic())
-        self.move.socket_dobot.settimeout(self.limits["command_timeout_s"])
-        try:
-            send_command(self.move.Sync)
-            self.assert_target(trajectory.last)
-        finally:
-            self.move.socket_dobot.settimeout(original_timeout)
+        self.wait_for_target(trajectory.last, after=time.monotonic(), command_id=command_id)
+        self.assert_target(trajectory.last)
 
     def stop_after_error(self):
         if self.motion_started:
-            original_timeout = self.dashboard.socket_dobot.gettimeout()
             try:
-                self.dashboard.socket_dobot.settimeout(self.limits["command_timeout_s"])
-                send_command(self.dashboard.ResetRobot)
+                with command_timeout(self.dashboard, self.limits["command_timeout_s"]):
+                    send_command(self.dashboard.Stop)
                 print("Stop request accepted after workflow interruption.", file=sys.stderr)
             except Exception as exc:
                 print(f"Stop request failed; check the robot and stop it manually: {exc}", file=sys.stderr)
-            finally:
-                self.dashboard.socket_dobot.settimeout(original_timeout)
 
 
 def _confirm_motion(message):

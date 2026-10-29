@@ -7,7 +7,8 @@ import sys
 import time
 from pathlib import Path
 
-from robot_common import CONFIG_FILE, connect, enable_robot, is_pose, read_config, read_vector, send_command, write_config
+from robot_common import (CONFIG_FILE, command_timeout, connect, enable_robot, is_pose, load_sdk,
+                          read_config, read_vector, send_command, send_queued_command, write_config)
 from trajectory_player import LiveFeedback, TrajectoryPlayer, state_errors, within
 
 
@@ -58,7 +59,7 @@ def move_point(name, config_path=CONFIG_FILE, speed=None):
     print(f"Move to saved point: {name}")
     print(f"  joint (deg): {point['joint']}")
     print(f"  pose (mm/deg): {point['pose']}")
-    print(f"JointMovJ at speed factor {speed}%. Confirm the full arm/fixture path is clear.")
+    print(f"MovJ(joint=...) at speed factor {speed}%. Confirm the full arm/fixture path is clear.")
     if input("Type Y to enable and move; any other input cancels: ").strip().upper() != "Y":
         print("Movement cancelled.")
         return None
@@ -71,30 +72,28 @@ def move_point(name, config_path=CONFIG_FILE, speed=None):
             if not within(state_errors(initial, {"pose": pose, "joint": initial["joint"]}),
                           player.limits, arrival=True):
                 raise RuntimeError("Dashboard and feedback poses differ; verify Tool/User/TCP conventions.")
-            previous_timeout = move.socket_dobot.gettimeout()
-            move.socket_dobot.settimeout(player.limits["command_timeout_s"])
-            try:
-                send_command(dashboard.SpeedFactor, speed)
-                enable_robot(dashboard)
-                deadline = time.monotonic()+player.limits["endpoint_timeout_s"]
-                while not feedback.state()["enable_status"]:
-                    if time.monotonic() >= deadline:
-                        raise RuntimeError("Enabled feedback did not arrive.")
-                    time.sleep(0.02)
-                player.state()
-                started = time.monotonic()
-                player.motion_started = True
-                send_command(move.JointMovJ, *point["joint"])
-                player.wait_for_target(point, after=started, timeout=player.limits["linear_timeout_s"])
-                send_command(move.Sync)
-                player.assert_target(point)
-                print(f"Reached saved point {name}. Robot remains enabled; saved data was not changed.")
-                return player.state()
-            except (Exception, KeyboardInterrupt):
-                player.stop_after_error()
-                raise
-            finally:
-                move.socket_dobot.settimeout(previous_timeout)
+            with command_timeout(move, player.limits["command_timeout_s"]):
+                try:
+                    send_command(dashboard.SpeedFactor, speed)
+                    enable_robot(dashboard)
+                    deadline = time.monotonic()+player.limits["endpoint_timeout_s"]
+                    while not feedback.state()["enable_status"]:
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Enabled feedback did not arrive.")
+                        time.sleep(0.02)
+                    player.state()
+                    started = time.monotonic()
+                    player.motion_started = True
+                    command_id = send_queued_command(
+                        move.MovJ, point["joint"], load_sdk().CoordinateType.JOINT, cp=0)
+                    player.wait_for_target(point, after=started, timeout=player.limits["linear_timeout_s"],
+                                           command_id=command_id)
+                    player.assert_target(point)
+                    print(f"Reached saved point {name}. Robot remains enabled; saved data was not changed.")
+                    return player.state()
+                except (Exception, KeyboardInterrupt):
+                    player.stop_after_error()
+                    raise
 
 
 def main():
@@ -102,7 +101,7 @@ def main():
     parser.add_argument("point", nargs="?", help="existing or new waypoint, e.g. HOME or LATTE_START")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--list", action="store_true", help="list shared waypoint names without connecting")
-    action.add_argument("--move", metavar="POINT", help="enable and JointMovJ to a saved point, e.g. HOME")
+    action.add_argument("--move", metavar="POINT", help="enable and MovJ(joint=...) to a saved point, e.g. HOME")
     parser.add_argument("--speed", type=int, help="speed factor for --move (1-100; defaults to shared setting)")
     parser.add_argument("--config", type=Path, default=CONFIG_FILE, help="shared configuration path")
     args = parser.parse_args()

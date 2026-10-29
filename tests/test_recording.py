@@ -16,7 +16,7 @@ import numpy as np
 import record_trajectory as recorder
 import robot_common
 import teach_point
-from trajectory_player import DEFAULT_LIMITS
+from trajectory_player import DEFAULT_LIMITS, LiveFeedback
 
 DTYPE = robot_common.load_sdk().MyType
 
@@ -59,10 +59,10 @@ class FakeSocket:
 def packet(timestamp=1, **changes):
     frame = np.zeros(1, dtype=DTYPE)
     frame["len"] = DTYPE.itemsize
-    frame["test_value"] = recorder.MAGIC
-    frame["time_stamp"] = timestamp
-    frame["q_actual"] = [1, 2, 3, 4, 5, 6]
-    frame["tool_vector_actual"] = [100, 200, 300, 90, 0, 10]
+    frame["TestValue"] = recorder.MAGIC
+    frame["TimeStamp"] = timestamp
+    frame["QActual"] = [1, 2, 3, 4, 5, 6]
+    frame["ToolVectorActual"] = [100, 200, 300, 90, 0, 10]
     for key, value in changes.items():
         frame[key] = value
     return frame.tobytes()
@@ -83,13 +83,13 @@ class FeedbackTests(unittest.TestCase):
         connection = FakeSocket(packet(1) + packet(2), clock, fragment=73)
         with patch.object(recorder.time, "perf_counter", clock):
             reader = recorder.FeedbackReader(connection, DTYPE)
-            self.assertEqual(int(reader.read()["time_stamp"]), 1)
-            self.assertEqual(int(reader.read()["time_stamp"]), 2)
+            self.assertEqual(int(reader.read()["TimeStamp"]), 1)
+            self.assertEqual(int(reader.read()["TimeStamp"]), 2)
 
     def test_invalid_header_rejected(self):
         clock = Clock()
         with patch.object(recorder.time, "perf_counter", clock):
-            reader = recorder.FeedbackReader(FakeSocket(packet(test_value=0), clock), DTYPE)
+            reader = recorder.FeedbackReader(FakeSocket(packet(TestValue=0), clock), DTYPE)
             with self.assertRaisesRegex(ValueError, "header"):
                 reader.read()
 
@@ -103,6 +103,7 @@ class FeedbackTests(unittest.TestCase):
     def test_duration_saves_timed_synchronized_samples(self):
         result = self.capture(b"".join(packet(i) for i in range(1, 31)))
         self.assertEqual(result["stop_reason"], "duration")
+        self.assertEqual(result["source"], "dobot_v4_feedback_30004")
         self.assertTrue(result["has_multiple_samples"])
         self.assertEqual(result["samples"][0]["t"], 0)
         self.assertEqual(result["samples"][0]["joint"], [1, 2, 3, 4, 5, 6])
@@ -125,15 +126,39 @@ class FeedbackTests(unittest.TestCase):
         self.assertIn("disconnected", result["error"])
 
     def test_wrong_frames_and_nonfinite_values_rejected(self):
-        for data in (packet(tool=1), packet(q_actual=[float("nan")] * 6)):
+        for data in (packet(Tool=1), packet(QActual=[float("nan")] * 6)):
             with self.subTest(data=data[:8]):
                 result = self.capture(data)
                 self.assertEqual(result["sample_count"], 0)
                 self.assertEqual(result["stop_reason"], "error")
 
     def test_frame_definition_change_stops_recording(self):
-        result = self.capture(packet(1) + packet(2, **{"tool[6]": [1] * 6}))
+        result = self.capture(packet(1) + packet(2, ToolValue=[1] * 6))
         self.assertIn("definitions changed", result["error"])
+
+    def test_live_feedback_decodes_v4_queue_and_motion_state(self):
+        monitor = LiveFeedback(self.config)
+        clock = Clock()
+        monitor.socket = FakeSocket(packet(7, CurrentCommandId=42, RunningStatus=1,
+                                           EnableStatus=1, QDActual=[0.1]*6), clock)
+        reader = recorder.FeedbackReader(monitor.socket, DTYPE)
+
+        def read_once():
+            frame = reader.read()
+            monitor.stopping.set()
+            return frame
+
+        monitor.reader = Mock(read=read_once)
+        with patch.object(recorder.time, "perf_counter", clock):
+            monitor._receive()
+        state = monitor.state()
+        self.assertEqual(state["joint"], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(state["pose"], [100, 200, 300, 90, 0, 10])
+        self.assertEqual(state["joint_velocity"], [0.1]*6)
+        self.assertEqual(state["current_command_id"], 42)
+        self.assertEqual(state["running_status"], 1)
+        self.assertEqual(state["enable_status"], 1)
+        self.assertEqual(state["frames"]["tool_frame"], [0.]*6)
 
     def test_timestamp_reset_stops_and_duplicates_are_skipped(self):
         result = self.capture(packet(2) + packet(2) + packet(1))
@@ -216,13 +241,12 @@ class TeachingTests(unittest.TestCase):
         for accepted in (True, False):
             with self.subTest(accepted=accepted):
                 dashboard, move = Mock(), Mock()
-                move.socket_dobot.gettimeout.return_value = 90
+                move.connection._receive_timeout = 90
                 for obj, name, reply in (
                     (dashboard, "GetPose", "0,{0,0,0,0,0,0},GetPose();"),
                     (dashboard, "SpeedFactor", "0,{},SpeedFactor();"),
                     (dashboard, "EnableRobot", "0,{},EnableRobot();"),
-                    (move, "JointMovJ", f"{0 if accepted else -1},{{}},JointMovJ();"),
-                    (move, "Sync", "0,{},Sync();"),
+                    (move, "MovJ", f"{0 if accepted else -1},{{42}},MovJ();"),
                 ):
                     command = getattr(obj, name)
                     command.__name__ = name
@@ -255,7 +279,7 @@ class TeachingTests(unittest.TestCase):
                             teach_point.move_point("HOME", self.path)
                         player.wait_for_target.assert_not_called()
                         player.stop_after_error.assert_called_once()
-                move.JointMovJ.assert_called_once_with(*point["joint"])
+                move.MovJ.assert_called_once_with(point["joint"], robot_common.load_sdk().CoordinateType.JOINT, cp=0)
                 self.assertEqual(self.path.read_bytes(), before)
 
     def test_move_invalid_point_or_cancel_does_not_connect(self):

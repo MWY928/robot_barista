@@ -1,4 +1,4 @@
-"""Seven offline playback checks using synthetic data; use recipe --check-steps for recorded robot motion."""
+"""Offline V4 playback checks; use recipe --check-steps for recorded robot motion."""
 
 import copy
 import contextlib
@@ -21,7 +21,7 @@ def recording(start=0, verified=True):
     samples = [{"t": index*0.04, "joint": [start+index*0.004, 0, 0, 0, 0, 0],
                 "pose": [start+index*0.004, 0, 0, 0, 0, 0], "error_status": 0}
                for index in range(4)]
-    return {"schema_version": 1, "source": "dobot_v3_feedback_30004",
+    return {"schema_version": 1, "source": "dobot_v4_feedback_30004",
             "stop_reason": "interrupted", "error": None, "replay_verified": verified,
             "feedback_frames": copy.deepcopy(FRAMES), "sample_count": len(samples), "samples": samples}
 
@@ -58,12 +58,12 @@ class PlaybackTests(unittest.TestCase):
         self.current = copy.deepcopy(trajectory.first)
         self.current["pose"][0] += offset
         self.current.update(frames=copy.deepcopy(FRAMES), enable_status=1,
-                            drag_status=0, error_status=0, joint_velocity=[0.]*6)
+                            drag_status=0, error_status=0, joint_velocity=[0.]*6,
+                            current_command_id=0, running_status=0)
         self.events = []
-        self.socket = Mock()
-        self.socket.gettimeout.return_value = 90
-        self.dashboard = Mock(socket_dobot=self.socket)
-        self.move = Mock(socket_dobot=self.socket)
+        self.connection = Mock(_receive_timeout=90)
+        self.dashboard = Mock(connection=self.connection)
+        self.move = Mock(connection=self.connection)
         self.monitor = Mock()
 
         def state():
@@ -71,25 +71,26 @@ class PlaybackTests(unittest.TestCase):
 
         self.monitor.state.side_effect = state
 
-        def movl(*pose):
+        def movl(pose, coord_type, **kwargs):
             self.events.append("MovL")
             self.current["pose"] = list(pose)
             self.current["joint"] = list(trajectory.first["joint"])
-            return "0,{},MovL();"
+            self.current["current_command_id"] += 1
+            return f"0,{{{self.current['current_command_id']}}},MovL();"
 
-        def servoj(*args):
+        def servoj(joints, **kwargs):
             self.events.append("ServoJ")
-            self.current["joint"] = list(args[:6])
-            self.current["pose"] = list(args[:6])
-            return "0,{},ServoJ();"
+            self.current["joint"] = list(joints)
+            self.current["pose"] = list(joints)
+            self.current["current_command_id"] += 1
+            return f"0,{{{self.current['current_command_id']}}},ServoJ();"
 
-        for name, side_effect in (("MovL", movl), ("ServoJ", servoj),
-                                  ("Sync", lambda: (self.events.append("Sync"), "0,{},Sync();")[1])):
+        for name, side_effect in (("MovL", movl), ("ServoJ", servoj)):
             command = getattr(self.move, name)
             command.__name__ = name
             command.side_effect = side_effect
-        self.dashboard.ResetRobot.__name__ = "ResetRobot"
-        self.dashboard.ResetRobot.return_value = "0,{},ResetRobot();"
+        self.dashboard.Stop.__name__ = "Stop"
+        self.dashboard.Stop.return_value = "0,{},Stop();"
         return tp.TrajectoryPlayer(self.dashboard, self.move, self.config, self.monitor)
 
     @contextlib.contextmanager
@@ -132,11 +133,43 @@ class PlaybackTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tp.load_trajectory("test", self.config)
 
+    def test_v3_recordings_require_rerecording(self):
+        data = recording()
+        data["source"] = "dobot_v3_feedback_30004"
+        self.write_take(data=data)
+        with self.assertRaisesRegex(ValueError, "rerecord V3"):
+            tp.load_trajectory("test", self.config)
+
+    def test_arrival_waits_for_command_id_and_idle_feedback(self):
+        self.write_take()
+        trajectory = tp.load_trajectory("test", self.config)
+        for command_id, running in ((0, 0), (1, 1), (1, 0)):
+            with self.subTest(command_id=command_id, running=running):
+                player = self.rig(trajectory)
+                self.current.update(current_command_id=command_id, running_status=running)
+                with self.simulation():
+                    if command_id == 1 and running == 0:
+                        player.wait_for_target(trajectory.first, command_id=1, timeout=0.03)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "Endpoint"):
+                            player.wait_for_target(trajectory.first, command_id=1, timeout=0.03)
+
+    def test_abort_sends_v4_stop_only_after_motion(self):
+        self.write_take()
+        player = self.rig(tp.load_trajectory("test", self.config))
+        with contextlib.redirect_stderr(io.StringIO()):
+            player.stop_after_error()
+            self.dashboard.Stop.assert_not_called()
+            player.motion_started = True
+            player.stop_after_error()
+        self.dashboard.Stop.assert_called_once_with()
+        self.dashboard.ResetRobot.assert_not_called()
+
     def test_move_to_start(self):
         """Already at start: no move. Small offset: one checked correction."""
         self.write_take()
         trajectory = tp.load_trajectory("test", self.config)
-        for offset, expected in ((0, []), (1, ["MovL", "Sync"])):
+        for offset, expected in ((0, []), (1, ["MovL"])):
             with self.subTest(offset=offset):
                 player = self.rig(trajectory, offset=offset)
                 with self.simulation():
@@ -168,7 +201,7 @@ class PlaybackTests(unittest.TestCase):
         player = self.rig(trajectory)
         self.current["joint"][0] += 2
         player.limits["linear_timeout_s"] = 0.03
-        self.move.MovL.side_effect = lambda *args: "0,{},MovL();"
+        self.move.MovL.side_effect = lambda *args, **kwargs: "0,{1},MovL();"
         with self.simulation(), self.assertRaisesRegex(RuntimeError, "Endpoint"):
             player.play(trajectory)
         self.assertNotIn("ServoJ", self.events)
@@ -182,14 +215,13 @@ class PlaybackTests(unittest.TestCase):
                 player = self.rig(trajectory, offset=1)
                 with self.robot_session(player):
                     state = tp.single_trajectory("test", self.config, commissioning=True, align_only=align_only)
-                self.assertEqual(self.events[:2], ["MovL", "Sync"])
+                self.assertEqual(self.events[0], "MovL")
                 if align_only:
-                    self.assertEqual(self.events, ["MovL", "Sync"])
+                    self.assertEqual(self.events, ["MovL"])
                     self.assertEqual(state["joint"], trajectory.first["joint"])
                 else:
                     self.assertGreater(self.events.count("ServoJ"), 1)
-                    self.assertEqual(self.events.count("Sync"), 2)  # alignment + segment end
-                    self.assertEqual(self.events[-1], "Sync")
+                    self.assertEqual(self.events[-1], "ServoJ")
                     self.assertEqual(state["joint"], trajectory.last["joint"])
 
     def test_abort_unhealthy_playback(self):
@@ -202,15 +234,15 @@ class PlaybackTests(unittest.TestCase):
                 if mode == "late":
                     original = self.move.ServoJ.side_effect
 
-                    def slow(*args):
-                        result = original(*args)
+                    def slow(*args, **kwargs):
+                        result = original(*args, **kwargs)
                         self.clock.now += 0.2
                         return result
 
                     self.move.ServoJ.side_effect = slow
                 elif mode == "tracking":
                     player.limits["max_tracking_error_deg"] = 0.00001
-                    self.move.ServoJ.side_effect = lambda *args: "0,{},ServoJ();"
+                    self.move.ServoJ.side_effect = lambda *args, **kwargs: "0,{1},ServoJ();"
                 else:
                     self.monitor.state.side_effect = RuntimeError("stale")
                 with self.simulation(), self.assertRaises(RuntimeError):

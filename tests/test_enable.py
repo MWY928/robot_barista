@@ -31,11 +31,6 @@ class Move:
         self.events.append("move")
         return "0,{},MovL();"
 
-    def Sync(self):
-        self.events.append("sync")
-        return "0,{},Sync();"
-
-
 class EnableTests(unittest.TestCase):
     def run_recipe(self, file, reply="0,{},EnableRobot();", home_ok=True):
         spec = importlib.util.spec_from_file_location("enable_recipe", robot_common.ROOT / file)
@@ -108,6 +103,31 @@ class EnableTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()):
             robot_common.main()
         self.assertEqual(events, ["enable"])
+
+    def test_status_bypasses_frame_selection_and_does_not_enable(self):
+        dashboard = Mock()
+        dashboard.RobotMode.return_value = "0,{4},RobotMode();"
+        dashboard.GetErrorID.return_value = "0,{[],[],[],[],[],[],[]},GetErrorID();"
+        sdk = Mock()
+        sdk.RobotControl.return_value = dashboard
+        dashboard.connection = sdk.DobotConnection.return_value
+        dashboard.connection._receive_timeout = 90
+        config = {"robot_ip": "192.0.2.1", "user_index": 0, "tool_index": 0}
+        output = io.StringIO()
+        with patch("sys.argv", ["robot_common.py", "--status"]), \
+                patch.object(robot_common, "read_config", return_value=config), \
+                patch.object(robot_common, "load_sdk", return_value=sdk), \
+                contextlib.redirect_stdout(output):
+            robot_common.main()
+        dashboard.User.assert_not_called()
+        dashboard.Tool.assert_not_called()
+        dashboard.EnableRobot.assert_not_called()
+        dashboard.ClearError.assert_not_called()
+        sdk.Motion.assert_not_called()
+        sdk.DobotConnection.assert_called_once_with("192.0.2.1", 29999)
+        dashboard.connection.disconnect.assert_called_once()
+        self.assertIn("RobotMode reply: 0,{4}", output.getvalue())
+        self.assertIn("GetErrorID reply: 0,{[]", output.getvalue())
 
 
 if __name__ == "__main__":

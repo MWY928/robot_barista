@@ -10,18 +10,62 @@ Python workflows for a DOBOT Nova 2 coffee workstation. Each recipe combines sha
 - `recipe_common.py`: offline workflow inspection and shared CLI helpers.
 - `Americano/`, `IceAmericano/`: recipe `PLAN` definitions, dispenser waits, and `check_trajectories()` functions.
 - `teach_point.py`, `robot_common.py`: shared point teaching, connections, and enabling.
+- `v4_connection.py`: project command transport for complete TCP sends/replies and bounded reply timeouts.
 - `trajectories/`: shared recordings and recording instructions.
-- `TCP_IP_Python_V3/`: bundled [Dobot SDK](https://github.com/Dobot-Arm/TCP-IP-Python-V3), including its license.
+- `TCP-IP-Python-V4-feature-v4-optimization/`: downloaded [official V4 SDK](https://github.com/Dobot-Arm/TCP-IP-Python-V4/tree/feature/v4-optimization), containing `dobot_sdk/` and its license.
 
 ## Setup
 
-Use Python 3.8+ and install NumPy:
+Use Python 3.8+ and install the V4 SDK dependencies:
 
 ```powershell
-python -m pip install numpy
+python -m pip install -r requirements.txt
 ```
 
-Configure the TCP, payload, Tool/User frames, compatible TCP/IP control mode, and actual `robot_ip`. Dashboard, motion, and live feedback use ports `29999`, `30003`, and `30004`. All three must work for recipe execution. Check controller compatibility with the bundled V3 `ServoJ` API before commissioning.
+The scripts now target the V4 protocol for your controller 4.6.7. Download the official SDK's **`feature/v4-optimization` branch**, which provides the `dobot_sdk` package. Unpack it in the repository root. The loader recognizes `TCP-IP-Python-V4-feature-v4-optimization/`, `TCP_IP_Python_V4/`, and `TCP-IP-Python-V4/`, including one extra nesting level created by Windows extraction. The SDK can also be installed into the active Python environment. A ZIP by itself, the old V3 SDK, or a V4 download containing only `dobot_api.py` will not satisfy this version's imports.
+
+Configure the TCP, payload, Tool/User frames, compatible TCP/IP control mode, and actual `robot_ip` in `robot_config.json`. V4 control and motion share **port `29999`**; live feedback uses **`30004`**. The scripts no longer open `30003`. Recording connects only to `30004`, while status/teaching/enabling connect only to `29999`.
+
+If using the project virtual environment, replace `python` in the commands below with `.\.venv\Scripts\python.exe`, or activate it first. Confirm the SDK loads without connecting to hardware:
+
+```powershell
+python -c "from robot_common import load_sdk; print(load_sdk().MyType.itemsize)"
+```
+
+The expected feedback size is `1440` bytes.
+
+The project wraps the downloaded SDK's command connection to send each command completely and read through the terminating `;`, including replies split across TCP packets. The reply timeout covers the entire message. An interrupted or incomplete exchange invalidates the connection so its delayed response cannot be mistaken for the next command's acknowledgement. The existing timeout helper also updates the live socket, since this SDK's `set_timeout()` only changes stored defaults. Recording/playback use the project's complete-frame feedback reader. These workarounds leave the downloaded SDK files unchanged.
+
+### V3 to V4 interface changes
+
+| Previous interface | Current V4 behavior |
+| --- | --- |
+| `dobot_api.DobotApiDashboard` / `DobotApiMove` | `DobotConnection` + `RobotControl` / `Motion`, sharing `29999` |
+| `JointMovJ(j1, ..., j6)` | `Motion.MovJ(joints, CoordinateType.JOINT, cp=0)`, transmitted as `MovJ(joint={...},cp=0)` |
+| `MovL(x, ..., rz)` | `Motion.MovL(pose, CoordinateType.CARTESIAN, user=..., tool=..., cp=0)` |
+| `ServoJ(j1, ..., j6, t, lookahead, gain)` | `Motion.ServoJ(joints, t=..., aheadtime=..., gain=...)` |
+| `Sync()` | Wait for the returned queue ID in `CurrentCommandId`, idle `RunningStatus`, and fresh actual joint/TCP arrival |
+| `ResetRobot()` on interruption | `RobotControl.Stop()` |
+| V3 feedback names/layout | V4 `MyType`, including `QActual`, `ToolVectorActual`, `TimeStamp`, `UserValue`, `ToolValue` |
+
+`User`, `Tool`, `GetAngle`, `GetPose`, `SpeedFactor`, `EnableRobot`, `RobotMode`, and `GetErrorID` keep their names under `RobotControl`. Existing recipe entry points and shared point values are retained. Newly recorded files use `source=dobot_v4_feedback_30004`; old V3 recordings are rejected and must be recorded and commissioned again on V4. Keep the workflow verification flags false until physical validation is complete.
+
+If the connection succeeds but a setup command such as `User(0)` fails, read diagnostic state:
+
+```powershell
+python robot_common.py --status
+```
+
+This queries `RobotMode()` and `GetErrorID()` without changing Tool/User, enabling, clearing alarms, or issuing movement commands. Check the control mode and coordinate frames in DobotStudio Pro; a failed frame-selection command is not ignored during teaching or motion.
+
+If the controller has not entered TCP control mode, disable the robot first and explicitly request control:
+
+```powershell
+python robot_common.py --request-control
+python robot_common.py --status
+```
+
+`--request-control` sends V4 `RequestControl()` without selecting frames or enabling. It is separate from ordinary connections, because switching control modes can be refused while the robot is enabled.
 
 Run commands from the repository root. To teach HOME or explicitly enable the robot:
 
@@ -40,7 +84,7 @@ python teach_point.py --move HOME
 python teach_point.py --move HOME --speed 5
 ```
 
-This reads `points.HOME` from `robot_config.json`, displays the saved values, and asks for `Y` before enabling and moving. `JointMovJ` restores the saved six joint angles so you can inspect the recorded arm configuration in physical space. The complete joint-motion path must be clear; it is not a TCP straight-line move or obstacle-avoiding route. Actual joints and TCP arrival are checked using live feedback. The command does not overwrite the saved point and leaves the robot enabled. Use the same command with another saved point name.
+This reads `points.HOME` from `robot_config.json`, displays the saved values, and asks for `Y` before enabling and moving. V4 `MovJ(joint={...})` restores the saved six joint angles so you can inspect the recorded arm configuration in physical space. The complete joint-motion path must be clear; it is not a TCP straight-line move or obstacle-avoiding route. Actual joints, TCP arrival, and queue completion are checked using live feedback. The command does not overwrite the saved point and leaves the robot enabled. Use the same command with another saved point name.
 
 ## Record shared segments
 
@@ -157,9 +201,9 @@ Before every segment, the player checks the actual live pose, joints, and coordi
 
 Playback interpolates recorded joint samples onto the fixed command period and sends `ServoJ` targets with a timed schedule. It does not stop at every recorded point. A final segment check requires the arm to reach the recorded endpoint and settle. The initial HOME connection and final return are separately planned `MovL` moves, not large automatic start corrections.
 
-Live stale feedback, controller errors, changed frames, excessive tracking error, and missed command deadlines abort execution. After motion has been issued, an interruption triggers a best-effort `ResetRobot` stop request. Always check the actual robot state; network disconnection and stop acknowledgements do not guarantee a physical stop.
+Live stale feedback, controller errors, changed frames, excessive tracking error, and missed command deadlines abort execution. After motion has been issued, an interruption triggers a best-effort V4 `Stop()` request. Always check the actual robot state; network disconnection and stop acknowledgements do not guarantee a physical stop.
 
-This is host-driven V3 playback, not a controller-native `StartPath` importer or a hard real-time system. Resampling and servo following can change the exact path between samples. Validate timing, response, and clearances on the actual robot. The pose convention is checked against dashboard feedback at HOME; no automatic frame conversion or collision avoidance is provided. For very sensitive pouring or latte-art work, further controller/timing validation is required. `speed_factor` is sent for ordinary motion; use `playback_speed` to set this player's timing rather than assuming the global override governs servo motion.
+This is host-driven V4 playback, not a controller-native `StartPath` importer or a hard real-time system. Resampling and servo following can change the exact path between samples. Validate timing, response, and clearances on the actual robot. The pose convention is checked against dashboard feedback at HOME; no automatic frame conversion or collision avoidance is provided. For very sensitive pouring or latte-art work, further controller/timing validation is required. `speed_factor` is sent for ordinary motion; use `playback_speed` to set this player's timing rather than assuming the global override governs servo motion. The application's conservative 20–100 ms servo-period limits and existing defaults are retained; migration does not enable the SDK's shortest 4 ms period.
 
 ## Recipe and device integration hooks
 
@@ -195,7 +239,7 @@ Put reusable device communication in a shared adapter module and call it from th
 4. Add handlers for new device actions. Replace manual `wait_*_finished()` functions with device startup, completion feedback, and timeout handling when integrating real dispensers.
 5. Run offline inspection and commission the complete route, including junction corrections and HOME connections.
 
-`tests/test_trajectory_player.py` contains seven hardware-free checks of program logic: loading, start alignment, unsafe-start rejection, confirmed arrival, single-segment playback, aborts, and workflow preflight. These checks use synthetic data, not your recorded trajectories; use the recipe scripts with `--check-trajectories` and `--check-steps` to inspect and physically validate your recorded files. Separate recording/teaching and enable tests remain in their own files.
+`tests/test_trajectory_player.py` contains hardware-free checks of program logic: loading, start alignment, unsafe-start rejection, confirmed arrival and V4 queue completion, single-segment playback, aborts, and workflow preflight. These checks use synthetic data, not your recorded trajectories; use the recipe scripts with `--check-trajectories` and `--check-steps` to inspect and physically validate your recorded files. Separate recording/teaching, enable, and native V4 SDK integration tests remain in their own files.
 
 Run the focused playback checks or the complete hardware-free suite:
 

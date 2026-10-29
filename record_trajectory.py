@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Passively record a timed joint/TCP trajectory from Dobot V3 feedback."""
+"""Passively record a timed joint/TCP trajectory from Dobot V4 feedback."""
 
 import argparse
 import json
@@ -15,6 +15,7 @@ from robot_common import CONFIG_FILE, ROOT, is_pose, load_sdk, read_config, vali
 
 FEEDBACK_PORT = 30004
 MAGIC = 0x123456789ABCDEF
+RECORDING_SOURCE = "dobot_v4_feedback_30004"
 
 
 class FeedbackReader:
@@ -24,7 +25,7 @@ class FeedbackReader:
         self.connection = connection
         self.dtype = dtype
         if dtype.itemsize != 1440:
-            raise ValueError(f"Expected a V3 1440-byte feedback layout; got {dtype.itemsize}.")
+            raise ValueError(f"Expected a V4 1440-byte feedback layout; got {dtype.itemsize}.")
 
     def read(self):
         import numpy as np
@@ -40,19 +41,19 @@ class FeedbackReader:
                 raise ConnectionError("Feedback connection closed before a complete packet arrived.")
             data.extend(chunk)
         frame = np.frombuffer(data, dtype=self.dtype, count=1)[0]
-        if int(frame["len"]) != self.dtype.itemsize or int(frame["test_value"]) != MAGIC:
-            raise ValueError("Invalid V3 feedback header. Check firmware/SDK compatibility.")
+        if int(frame["len"]) != self.dtype.itemsize or int(frame["TestValue"]) != MAGIC:
+            raise ValueError("Invalid V4 feedback header. Check firmware/SDK compatibility.")
         return frame
 
 
 def frame_values(frame, config):
-    joint = frame["q_actual"].tolist()
-    pose = frame["tool_vector_actual"].tolist()
-    user_frame = frame["user[6]"].tolist()
-    tool_frame = frame["tool[6]"].tolist()
+    joint = frame["QActual"].tolist()
+    pose = frame["ToolVectorActual"].tolist()
+    user_frame = frame["UserValue"].tolist()
+    tool_frame = frame["ToolValue"].tolist()
     if not all(is_pose(value) for value in (joint, pose, user_frame, tool_frame)):
         raise ValueError("Feedback contains an invalid joint, pose or coordinate frame.")
-    user, tool = int(frame["user"]), int(frame["tool"])
+    user, tool = int(frame["User"]), int(frame["Tool"])
     if user != config.get("user_index", 0) or tool != config.get("tool_index", 0):
         raise ValueError(
             f"Feedback Tool/User ({tool}/{user}) differs from config "
@@ -96,7 +97,7 @@ def capture(connection, dtype, config, duration, rate, timeout, name):
                 frames = active_frames
             elif frames != active_frames:
                 raise ValueError("Tool/User frame definitions changed during recording.")
-            timestamp = int(frame["time_stamp"])
+            timestamp = int(frame["TimeStamp"])
             if last_timestamp is not None and timestamp < last_timestamp:
                 raise ValueError("Controller timestamp moved backwards; recording stopped.")
             received += 1
@@ -112,9 +113,9 @@ def capture(connection, dtype, config, duration, rate, timeout, name):
                 "controller_timestamp_raw": timestamp,
                 "joint": joint,
                 "pose": pose,
-                "robot_mode": int(frame["robot_mode"]),
-                "drag_status": int(frame["drag_status"]),
-                "error_status": int(frame["error_status"]),
+                "robot_mode": int(frame["RobotMode"]),
+                "drag_status": int(frame["DragStatus"]),
+                "error_status": int(frame["ErrorStatus"]),
             })
             # Never sleep here: the feedback stream must be drained continuously.
             next_sample_time = received_at + 1.0 / rate
@@ -128,14 +129,14 @@ def capture(connection, dtype, config, duration, rate, timeout, name):
         "schema_version": 1,
         "name": name,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "source": "dobot_v3_feedback_30004",
+        "source": RECORDING_SOURCE,
         "robot_ip": config["robot_ip"],
         "configured_frames": {key: config.get(key, 0) for key in ("user_index", "tool_index")},
         "feedback_frames": frames,
         "units": {"t": "seconds (host monotonic receive time, first sample = 0)",
                   "joint": "degrees", "pose": "mm / degrees",
                   "controller_timestamp_raw": "controller value, unconverted"},
-        "pose_source": "tool_vector_actual, as reported by controller; no frame conversion",
+        "pose_source": "ToolVectorActual, as reported by controller; no frame conversion",
         "requested_duration_s": duration,
         "requested_rate_hz": rate,
         "sample_count": len(samples),
