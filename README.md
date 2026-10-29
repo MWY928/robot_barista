@@ -109,6 +109,29 @@ Normal runs check all required files and verification flags before connecting or
 
 ## Playback behavior
 
+Other programs can run a recorded segment through the public function in the existing player module:
+
+```python
+from trajectory_player import single_trajectory
+
+# PHYSICAL MOTION: validate an unverified recording, align and play it once.
+final_state = single_trajectory("pick_cup", commissioning=True)
+
+# Use align_only=True to finish after checking/correcting the start position.
+# For an already verified take, leave commissioning at its default False.
+```
+
+The same entry point is available from the terminal:
+
+```powershell
+python trajectory_player.py pick_cup --commissioning --align-only
+python trajectory_player.py pick_cup --commissioning
+```
+
+`single_trajectory()` loads the actual mapped recording, checks live state before enabling, confirms motion with the operator, aligns within the shared margins, plays, and checks the endpoint. Position near the recorded start first; larger errors raise an exception. It returns the final feedback state and leaves verification flags unchanged. Enable state is not automatically cleared on exit.
+
+The call chain is `single_trajectory()` -> `check_start()` -> `ensure_start()` -> `play()` -> endpoint check. These are runtime checks used by application code. `test_reject_unsafe_start` and the other `test_*` functions under `tests/` are independent unittest checks of that behavior; they are not called to operate the robot. No separate trial script is needed.
+
 `trajectory_settings` in the shared JSON applies to all recipes. Initial values are commissioning defaults, not validated workstation limits:
 
 | Setting | Default | Purpose |
@@ -162,8 +185,11 @@ Put reusable device communication in a shared adapter module and call it from th
 4. Add handlers for new device actions. Replace manual `wait_*_finished()` functions with device startup, completion feedback, and timeout handling when integrating real dispensers.
 5. Run offline inspection and commission the complete route, including junction corrections and HOME connections.
 
-Hardware-free tests:
+`tests/test_trajectory_player.py` contains seven hardware-free checks of program logic: loading, start alignment, unsafe-start rejection, confirmed arrival, single-segment playback, aborts, and workflow preflight. These checks use synthetic data, not your recorded trajectories; use the recipe scripts with `--check-trajectories` and `--check-steps` to inspect and physically validate your recorded files. Separate recording/teaching and enable tests remain in their own files.
+
+Run the focused playback checks or the complete hardware-free suite:
 
 ```powershell
+python -m unittest discover -s tests -p test_trajectory_player.py -v
 python -m unittest discover -s tests -v
 ```

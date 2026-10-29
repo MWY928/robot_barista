@@ -1,5 +1,6 @@
 """Shared, guarded playback of time-stamped Dobot V3 joint recordings."""
 
+import argparse
 import bisect
 import copy
 import json
@@ -11,7 +12,8 @@ import time
 from pathlib import Path
 
 from record_trajectory import FEEDBACK_PORT, FeedbackReader, frame_values
-from robot_common import ROOT, is_pose, load_sdk, read_vector, send_command
+from robot_common import (CONFIG_FILE, ROOT, connect, enable_robot, is_pose, load_sdk,
+                          read_config, read_vector, send_command, validate_connection_config)
 
 # Commission these values on the actual workstation before production use.
 DEFAULT_LIMITS = {
@@ -344,12 +346,18 @@ class TrajectoryPlayer:
         finally:
             self.move.socket_dobot.settimeout(original_timeout)
 
-    def ensure_start(self, trajectory):
+    def check_start(self, trajectory, require_enabled=False):
+        """Read live state and reject mismatched frames or excessive start error."""
         self.use_frames(trajectory)
-        state = self.state()
+        state = self.state(require_enabled=require_enabled)
         errors = state_errors(state, trajectory.first)
         if not within(errors, self.limits):
             raise RuntimeError(f"{trajectory.name}: start mismatch exceeds margin: " + describe_errors(errors))
+        return errors
+
+    def ensure_start(self, trajectory):
+        """Check, correct a small error, and confirm actual arrival before playback."""
+        errors = self.check_start(trajectory, require_enabled=True)
         if not within(errors, self.limits, arrival=True):
             print("Aligning to segment start: " + describe_errors(errors))
             self.move_linear(trajectory.first)
@@ -408,3 +416,78 @@ class TrajectoryPlayer:
                 print(f"Stop request failed; check the robot and stop it manually: {exc}", file=sys.stderr)
             finally:
                 self.dashboard.socket_dobot.settimeout(original_timeout)
+
+
+def _confirm_motion(message):
+    print(message)
+    if input("Type Y to continue; any other input aborts: ").strip().upper() != "Y":
+        raise RuntimeError("Operator aborted the single-trajectory run.")
+
+
+def single_trajectory(name, config=None, *, commissioning=False, align_only=False):
+    """Run one real recorded segment, including connection, checks and alignment.
+
+    Raises on invalid data, a bad start, feedback faults or failed arrival.
+    commissioning=True allows a take whose replay_verified flag is false.
+    This function moves real hardware, asks for confirmation and does not
+    change verification flags or automatically disable the robot on exit.
+    """
+    config = read_config() if config is None else config
+    validate_connection_config(config)
+    trajectory = load_trajectory(name, config, require_verified=not commissioning)
+    speed = config.get("speed_factor", 10)
+    if type(speed) is not int or not 1 <= speed <= 100:
+        raise ValueError("speed_factor must be an integer from 1 to 100.")
+    print(f"Recorded trajectory: {name} ({trajectory.path})")
+    print(f"Start pose (mm/deg): {trajectory.first['pose']}")
+    print(f"Start joints (deg): {trajectory.first['joint']}")
+    _confirm_motion("PHYSICAL MOTION: position near this start and exit drag mode. "
+                    "Confirm the alignment path is clear; the robot will be enabled.")
+    with connect(config, for_movement=True) as (dashboard, move):
+        with LiveFeedback(config) as feedback:
+            player = TrajectoryPlayer(dashboard, move, config, feedback)
+            # Reject large start errors before enabling, then recheck before motion.
+            player.check_start(trajectory)
+            state = player.state(require_enabled=False)
+            dashboard_pose = read_vector(dashboard.GetPose)
+            if not within(state_errors(state, {"pose": dashboard_pose, "joint": state["joint"]}),
+                          player.limits, arrival=True):
+                raise RuntimeError("Dashboard and feedback poses differ; verify Tool/User/TCP conventions.")
+            try:
+                send_command(dashboard.SpeedFactor, speed)
+                enable_robot(dashboard)
+                deadline = time.monotonic()+player.limits["endpoint_timeout_s"]
+                while not feedback.state()["enable_status"]:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Enabled feedback did not arrive.")
+                    time.sleep(0.02)
+                player.ensure_start(trajectory)
+                print("Start reached and checked.")
+                if not align_only:
+                    _confirm_motion("Play this recorded segment once? Confirm the complete arm/cup path is clear.")
+                    player.play(trajectory)
+                    print("Recorded endpoint reached and checked.")
+                return player.state()
+            except (Exception, KeyboardInterrupt):
+                player.stop_after_error()
+                raise
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run one recorded trajectory using shared runtime checks")
+    parser.add_argument("name", help="logical trajectory name in robot_config.json")
+    parser.add_argument("--config", type=Path, default=CONFIG_FILE)
+    parser.add_argument("--commissioning", action="store_true", help="allow an unverified take for physical validation")
+    parser.add_argument("--align-only", action="store_true", help="check and align to the recorded start, then finish")
+    args = parser.parse_args()
+    single_trajectory(args.name, read_config(args.config), commissioning=args.commissioning,
+                      align_only=args.align_only)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError, ImportError, EOFError, KeyboardInterrupt) as exc:
+        print(f"Single trajectory aborted: {exc}", file=sys.stderr)
+        print("Check the actual robot state; disconnecting does not guarantee stopping.", file=sys.stderr)
+        sys.exit(1)
