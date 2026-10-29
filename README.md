@@ -32,6 +32,16 @@ python robot_common.py --enable
 
 Teaching reads a stationary pose and joints; enter `SAVE` to update the shared JSON. It resets all workflow verification flags. New waypoint names are supported, and `--list` lists existing points. Recipe `--teach POINT` commands remain aliases. Segmented recipes require only HOME in the point table; other existing taught points are preserved for future use.
 
+To physically inspect a saved waypoint, move the robot to it:
+
+```powershell
+python teach_point.py --move HOME
+# Optional lower speed factor:
+python teach_point.py --move HOME --speed 5
+```
+
+This reads `points.HOME` from `robot_config.json`, displays the saved values, and asks for `Y` before enabling and moving. `JointMovJ` restores the saved six joint angles so you can inspect the recorded arm configuration in physical space. The complete joint-motion path must be clear; it is not a TCP straight-line move or obstacle-avoiding route. Actual joints and TCP arrival are checked using live feedback. The command does not overwrite the saved point and leaves the robot enabled. Use the same command with another saved point name.
+
 ## Record shared segments
 
 Recipe scripts already reserve the segment names and their execution order in `PLAN`. The shared JSON already maps these names to files:

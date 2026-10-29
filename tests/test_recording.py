@@ -16,6 +16,7 @@ import numpy as np
 import record_trajectory as recorder
 import robot_common
 import teach_point
+from trajectory_player import DEFAULT_LIMITS
 
 DTYPE = robot_common.load_sdk().MyType
 
@@ -205,6 +206,68 @@ class TeachingTests(unittest.TestCase):
         with patch.object(teach_point, "connect") as connect:
             with self.assertRaises(ValueError):
                 teach_point.teach_point("../bad", self.path)
+            connect.assert_not_called()
+
+    def test_move_saved_point_and_abort_on_rejection(self):
+        point = {"joint": [1, 2, 3, 4, 5, 6], "pose": [100, 200, 300, 0, 0, 0]}
+        self.config["points"]["HOME"] = point
+        robot_common.write_config(self.config, self.path)
+        before = self.path.read_bytes()
+        for accepted in (True, False):
+            with self.subTest(accepted=accepted):
+                dashboard, move = Mock(), Mock()
+                move.socket_dobot.gettimeout.return_value = 90
+                for obj, name, reply in (
+                    (dashboard, "GetPose", "0,{0,0,0,0,0,0},GetPose();"),
+                    (dashboard, "SpeedFactor", "0,{},SpeedFactor();"),
+                    (dashboard, "EnableRobot", "0,{},EnableRobot();"),
+                    (move, "JointMovJ", f"{0 if accepted else -1},{{}},JointMovJ();"),
+                    (move, "Sync", "0,{},Sync();"),
+                ):
+                    command = getattr(obj, name)
+                    command.__name__ = name
+                    command.return_value = reply
+                player = Mock(spec=teach_point.TrajectoryPlayer)
+                player.limits = dict(DEFAULT_LIMITS)
+                player.state.return_value = {"joint": [0]*6, "pose": [0]*6, "frames": {}}
+                feedback = Mock()
+                feedback.state.return_value = {"enable_status": 1}
+
+                @contextlib.contextmanager
+                def connection(config, for_movement):
+                    self.assertTrue(for_movement)
+                    yield dashboard, move
+
+                @contextlib.contextmanager
+                def live_feedback(config):
+                    yield feedback
+
+                with patch.object(teach_point, "connect", connection), \
+                        patch.object(teach_point, "LiveFeedback", live_feedback), \
+                        patch.object(teach_point, "TrajectoryPlayer", return_value=player), \
+                        patch("builtins.input", return_value="Y"), contextlib.redirect_stdout(io.StringIO()):
+                    if accepted:
+                        teach_point.move_point("HOME", self.path, speed=5)
+                        player.wait_for_target.assert_called_once()
+                        player.assert_target.assert_called_once_with(point)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            teach_point.move_point("HOME", self.path)
+                        player.wait_for_target.assert_not_called()
+                        player.stop_after_error.assert_called_once()
+                move.JointMovJ.assert_called_once_with(*point["joint"])
+                self.assertEqual(self.path.read_bytes(), before)
+
+    def test_move_invalid_point_or_cancel_does_not_connect(self):
+        with patch.object(teach_point, "connect") as connect:
+            with self.assertRaises(ValueError):
+                teach_point.move_point("HOME", self.path)  # Untaught point.
+            with self.assertRaises(ValueError):
+                teach_point.move_point("UNKNOWN", self.path)
+            self.config["points"]["HOME"] = {"joint": [0]*6, "pose": [0]*6}
+            robot_common.write_config(self.config, self.path)
+            with patch("builtins.input", return_value="cancel"), contextlib.redirect_stdout(io.StringIO()):
+                self.assertIsNone(teach_point.move_point("HOME", self.path))
             connect.assert_not_called()
 
     def test_recipes_keep_their_plans_and_delegate_teaching(self):
