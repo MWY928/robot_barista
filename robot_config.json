@@ -132,9 +132,9 @@
     }
   },
   "trajectory_settings": {
-    "start_position_margin_mm": 5.0,
-    "start_orientation_margin_deg": 3.0,
-    "start_joint_margin_deg": 5.0,
+    "start_position_margin_mm": 50.0,
+    "start_orientation_margin_deg": 6.0,
+    "start_joint_margin_deg": 6.0,
     "arrival_position_mm": 0.5,
     "arrival_orientation_deg": 0.5,
     "arrival_joint_deg": 1.0,
@@ -144,7 +144,7 @@
     "command_timeout_s": 2.0,
     "settle_joint_speed_deg_s": 0.5,
     "servo_period_s": 0.04,
-    "playback_speed": 0.35,
+    "playback_speed": 1,
     "max_command_lag_s": 0.04,
     "max_tracking_error_deg": 5.0,
     "max_sample_gap_s": 0.2,
@@ -156,6 +156,12 @@
     "servo_gain": 500.0
   },
   "trajectories": {
+    "cup_to_coffee_idle_trimmed": {
+      "file": "trajectories/cup_to_coffee_idle_trimmed.json"
+    },
+    "pick_cup_smooth_idle_trimmed": {
+      "file": "trajectories/pick_cup_smooth_idle_trimmed.json"
+    },
     "pick_cup": {
       "file": "trajectories/pick_cup.json"
     },

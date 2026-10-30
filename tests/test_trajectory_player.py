@@ -122,6 +122,100 @@ class PlaybackTests(unittest.TestCase):
                 patch.object(tp, "_confirm_motion"):
             yield
 
+    def test_reverse_irregular_timeline_and_no_mutation(self):
+        data = recording()
+        for sample, t in zip(data["samples"], (0, 0.03, 0.08, 0.12)):
+            sample["t"] = t
+            sample["controller_timestamp_raw"] = {"value": t + 100}
+        original = copy.deepcopy(data)
+        source = tp.validate_recording(data, self.config)
+        reverse = tp.reverse_trajectory(source, self.config)
+        for actual, expected in zip(reverse.times, (0, 0.04, 0.09, 0.12)):
+            self.assertAlmostEqual(actual, expected)
+        self.assertEqual(reverse.duration, source.duration)
+        self.assertEqual(reverse.data["recorded_duration_s"], source.duration)
+        self.assertEqual(reverse.data["sample_count"], 4)
+        self.assertFalse(reverse.data["replay_verified"])
+        for new, old in zip(reverse.samples, reversed(source.samples)):
+            for key in ("joint", "pose", "controller_timestamp_raw"):
+                self.assertEqual(new[key], old[key])
+        for t in (0, 0.01, 0.04, 0.065, 0.09, 0.12):
+            for actual, expected in zip(reverse.joint_at(t), source.joint_at(source.duration-t)):
+                self.assertAlmostEqual(actual, expected)
+        self.assertEqual(reverse.joint_at(-1), source.last["joint"])
+        self.assertEqual(reverse.joint_at(1), source.first["joint"])
+        reverse.first["joint"][0] = 123
+        reverse.frames["tool_frame"][0] = 123
+        reverse.first["controller_timestamp_raw"]["value"] = 123
+        self.assertEqual(data, original)
+
+    def test_reverse_dynamics_before_connection(self):
+        data = recording()
+        data["samples"] = [
+            {"t": t, "joint": [q, 0, 0, 0, 0, 0], "pose": [0]*6}
+            for t, q in ((0, 0), (0.02, 0.06), (0.05, 0.18))]
+        data["sample_count"] = 3
+        self.write_take(data=data)
+        self.config["trajectory_settings"] = {"playback_speed": 1}
+        tp.load_trajectory("test", self.config)  # Forward passes the same limits.
+        with patch.object(tp, "connect") as connection, patch.object(tp, "_confirm_motion") as confirm:
+            with self.assertRaisesRegex(ValueError, "phase=start"):
+                tp.single_trajectory("test", self.config, reverse=True, commissioning=True)
+            connection.assert_not_called()
+            confirm.assert_not_called()
+
+    def test_reverse_source_protections(self):
+        for key, value in (("source", "invalid"), ("error", "failed"), ("sample_count", 99)):
+            with self.subTest(key=key):
+                data = recording()
+                data[key] = value
+                self.write_take(data=data)
+                with patch.object(tp, "connect") as connection, self.assertRaises(ValueError):
+                    tp.single_trajectory("test", self.config, reverse=True, commissioning=True)
+                connection.assert_not_called()
+
+    def test_reverse_requires_commissioning_even_if_forward_verified(self):
+        for verified in (True, False):
+            with self.subTest(verified=verified):
+                self.write_take(data=recording(verified=verified))
+                with patch.object(tp, "connect") as connection, patch.object(tp, "_confirm_motion") as confirm:
+                    with self.assertRaisesRegex(ValueError, "Reverse playback is unverified.*--commissioning"):
+                        tp.single_trajectory("test", self.config, reverse=True)
+                    connection.assert_not_called()
+                    confirm.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "replay_verified"):
+            tp.single_trajectory("test", self.config)
+
+    def test_reverse_public_runner_and_alignment(self):
+        for verified in (True, False):
+            for align_only in (True, False):
+                with self.subTest(verified=verified, align_only=align_only):
+                    path = self.write_take(data=recording(verified=verified))
+                    original = path.read_bytes()
+                    forward = tp.load_trajectory("test", self.config)
+                    reverse = tp.reverse_trajectory(forward, self.config)
+                    player = self.rig(reverse, offset=1)
+                    with self.robot_session(player), contextlib.redirect_stdout(io.StringIO()) as output:
+                        state = tp.single_trajectory("test", self.config, reverse=True,
+                                                     commissioning=True, align_only=align_only)
+                    self.assertIn("Playback direction: reverse", output.getvalue())
+                    self.assertEqual(self.move.MovL.call_args.args[0], forward.last["pose"])
+                    self.assertEqual(state["joint"], (forward.last if align_only else forward.first)["joint"])
+                    self.assertEqual(path.read_bytes(), original)
+                    if align_only:
+                        self.move.ServoJ.assert_not_called()
+                    else:
+                        self.move.ServoJ.assert_called()
+
+    def test_reverse_cli_propagation(self):
+        for extra, expected in (([], False), (["--reverse"], True)):
+            with patch.object(tp.sys, "argv", ["trajectory_player.py", "test", "--commissioning", "--align-only", *extra]), \
+                    patch.object(tp, "read_config", return_value=self.config), \
+                    patch.object(tp, "single_trajectory") as runner:
+                tp.main()
+                runner.assert_called_once_with("test", self.config, commissioning=True,
+                                               align_only=True, reverse=expected)
+
     def test_load_recording(self):
         """A usable take loads; a broken timeline is rejected."""
         self.write_take()

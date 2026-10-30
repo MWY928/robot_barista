@@ -23,6 +23,87 @@ DEFAULT_SIGMA = 3.0
 MAX_STRETCH = 10.0
 
 
+def idle_bounds(samples):
+    """Contiguous endpoint-relative idle only; never inspect/remove interior pauses."""
+    def near(a, b):
+        errors = trajectory_player.state_errors(a, b)
+        return (errors["joint_deg"] <= .1 and errors["position_mm"] <= 1
+                and errors["orientation_deg"] <= .1)
+    first, last = 0, len(samples) - 1
+    while first < last and near(samples[first + 1], samples[0]):
+        first += 1
+    while last > 0 and near(samples[last - 1], samples[-1]):
+        last -= 1
+    return first, last
+
+
+def trim_idle_recording(original_data, config, name=None, *, retime=False):
+    """Search conservative buffers; validate the entire fixed-period output.
+
+    Keep exact endpoint states and an uninterrupted interior slice. Only collapse
+    idle intervals between the original endpoints and that slice. No filtering,
+    synthetic poses, speed changes or limit relaxation. Failed captures are
+    rejected BEFORE removing anything. Stationary takes remain intact.
+    """
+    trajectory_player.validate_recording(original_data, config, check_dynamics=False)
+    source = original_data["samples"]
+    first, last = idle_bounds(source)
+    duration = source[-1]["t"]
+    # Start with 0.20 source seconds and at least two samples on each side;
+    # expand toward the untouched original if a splice fails validation.
+    last_error = None
+    for attempt in range(22):
+        buffer = .2 * 1.5 ** attempt
+        left, right = first, last
+        if first >= last or attempt == 21:
+            left, right = 1, len(source) - 2
+        else:
+            while left > 1 and (source[first]["t"] - source[left]["t"] < buffer
+                                or first - left < 2):
+                left -= 1
+            while right < len(source) - 2 and (source[right]["t"] - source[last]["t"] < buffer
+                                              or right - last < 2):
+                right += 1
+            left = max(1, left)
+            right = min(len(source) - 2, right)
+        indices = [0] + list(range(left, right + 1)) + [len(source) - 1]
+        samples = copy.deepcopy([source[i] for i in indices])
+        # Preserve the original endpoint-adjacent interval, not the removed gap.
+        removed_start = source[left]["t"] - source[1]["t"]
+        removed_end = source[-2]["t"] - source[right]["t"]
+        for sample, index in zip(samples, indices):
+            sample.setdefault("source_t", source[index]["t"])
+            sample["t"] = (0 if index == 0 else source[index]["t"] - removed_start)
+        samples[-1]["t"] -= removed_end
+        data = make_recording(copy.deepcopy(original_data), samples,
+                              name or original_data.get("name", "recording"))
+        data["idle_trim"] = {
+            "method": "endpoint_idle_inner_removal_v1",
+            "source_name": original_data.get("name"),
+            "source_created_at_utc": original_data.get("created_at_utc"),
+            "source_duration_s": duration,
+            "source_sample_count": len(source),
+            "retained_source_indices": indices,
+            "thresholds": {"joint_deg": .1, "position_mm": 1., "orientation_deg": .1},
+            "removed_leading_s": removed_start, "removed_trailing_s": removed_end,
+            "validated_playback_speed": trajectory_player.limits_for(config)["playback_speed"],
+        }
+        try:
+            if retime:
+                data = retime_recording(data, config, name)
+            else:
+                trajectory_player.validate_recording(data, config)
+        except ValueError as exc:
+            last_error = exc
+            continue
+        start, end = idle_bounds(data["samples"])
+        data["idle_trim"].update(
+            remaining_leading_s=data["samples"][start]["t"],
+            remaining_trailing_s=data["samples"][-1]["t"] - data["samples"][end]["t"])
+        return data
+    raise ValueError(f"Cannot trim within unchanged dynamics/gap limits: {last_error}")
+
+
 def build_samples(original, sigma, stretch, rate):
     """Time warp only; legacy sigma/rate arguments do not filter geometry.
 

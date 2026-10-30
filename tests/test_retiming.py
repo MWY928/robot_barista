@@ -86,10 +86,10 @@ class RetimingTests(unittest.TestCase):
 
     def test_existing_smooth_passes_new_config(self):
         config = read_config()
-        self.assertEqual(config["trajectory_settings"]["playback_speed"], .35)
+        self.assertEqual(config["trajectory_settings"]["playback_speed"], .2)
         self.assertEqual(player.DEFAULT_LIMITS["playback_speed"], .35)
         trajectory = player.load_trajectory("pick_cup_smooth", config)
-        self.assertAlmostEqual(trajectory.duration/.35, 28.320593900030612)
+        self.assertAlmostEqual(trajectory.duration/.2, 49.56103932505357)
 
 
 if __name__ == "__main__":

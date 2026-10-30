@@ -140,6 +140,24 @@ class Trajectory:
         return [x + fraction*(y-x) for x, y in zip(a["joint"], b["joint"])]
 
 
+def reverse_trajectory(trajectory, config):
+    """Create an unverified reverse take; validate source and full reverse dynamics.
+
+    Raw controller timestamps and other sample metadata stay paired with their
+    original joint/pose; only the playback timeline is transformed.
+    """
+    source = validate_recording(trajectory.data, config, trajectory.name, trajectory.path)
+    data = copy.deepcopy(source.data)
+    data["samples"].reverse()
+    for sample in data["samples"]:
+        sample["t"] = source.duration - sample["t"]
+    data["sample_count"] = len(data["samples"])
+    data["recorded_duration_s"] = source.duration
+    data["replay_verified"] = False
+    data["playback_direction"] = "reverse"
+    return validate_recording(data, config, source.name, source.path)
+
+
 def load_trajectory(name, config, require_verified=False):
     """Validate the complete take before allowing any robot connection."""
     entry = config.get("trajectories", {}).get(name)
@@ -447,21 +465,29 @@ def _confirm_motion(message):
         raise RuntimeError("Operator aborted the single-trajectory run.")
 
 
-def single_trajectory(name, config=None, *, commissioning=False, align_only=False):
+def single_trajectory(name, config=None, *, commissioning=False, align_only=False, reverse=False):
     """Run one real recorded segment, including connection, checks and alignment.
 
     Raises on invalid data, a bad start, feedback faults or failed arrival.
     commissioning=True allows a take whose replay_verified flag is false.
+    reverse=True starts at the former endpoint and always requires commissioning:
+    forward physical verification does not verify the reverse motion.
     This function moves real hardware, asks for confirmation and does not
     change verification flags or automatically disable the robot on exit.
     """
     config = read_config() if config is None else config
     validate_connection_config(config)
-    trajectory = load_trajectory(name, config, require_verified=not commissioning)
+    trajectory = load_trajectory(name, config, require_verified=not commissioning and not reverse)
+    if reverse:
+        trajectory = reverse_trajectory(trajectory, config)
+        if not commissioning:
+            raise ValueError("Reverse playback is unverified even if forward replay_verified is true; "
+                             "use --commissioning for physical validation of the reverse path.")
     speed = config.get("speed_factor", 10)
     if type(speed) is not int or not 1 <= speed <= 100:
         raise ValueError("speed_factor must be an integer from 1 to 100.")
     print(f"Recorded trajectory: {name} ({trajectory.path})")
+    print(f"Playback direction: {'reverse (unverified; former endpoint is start)' if reverse else 'forward'}")
     print(f"Start pose (mm/deg): {trajectory.first['pose']}")
     print(f"Start joints (deg): {trajectory.first['joint']}")
     _confirm_motion("PHYSICAL MOTION: position near this start and exit drag mode. "
@@ -504,9 +530,11 @@ def main():
     parser.add_argument("--config", type=Path, default=CONFIG_FILE)
     parser.add_argument("--commissioning", action="store_true", help="allow an unverified take for physical validation")
     parser.add_argument("--align-only", action="store_true", help="check and align to the recorded start, then finish")
+    parser.add_argument("--reverse", action="store_true",
+                        help="play backwards from the former endpoint; requires --commissioning even for verified takes")
     args = parser.parse_args()
     single_trajectory(args.name, read_config(args.config), commissioning=args.commissioning,
-                      align_only=args.align_only)
+                      align_only=args.align_only, reverse=args.reverse)
 
 
 if __name__ == "__main__":

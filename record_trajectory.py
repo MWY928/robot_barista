@@ -169,14 +169,14 @@ def save_recording(recording, path):
 
 def process_and_save(recording, path, config):
     """Keep exclusive raw backup; failures never create a processed take."""
-    from smooth_trajectory import retime_recording
+    from smooth_trajectory import trim_idle_recording
     path = Path(path)
     raw = path.with_name(path.stem + "_raw" + path.suffix)
     if path.exists() or raw.exists():
         raise FileExistsError("Output or raw backup exists; choose a new take name.")
     save_recording(recording, raw)
     try:
-        processed = retime_recording(recording, config)
+        processed = trim_idle_recording(recording, config, retime=True)
     except ValueError as exc:
         raise ValueError(f"Raw backup saved to {raw}; no processed output: {exc}") from exc
     save_recording(processed, path)
