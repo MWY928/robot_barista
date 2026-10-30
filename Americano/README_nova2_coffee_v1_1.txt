@@ -5,11 +5,15 @@ Player: ../trajectory_player.py
 
 Plan:
   Verify HOME -> MovL to pick_cup start -> pick_cup
-  -> wait for cup -> cup_to_coffee -> wait for coffee (plus 2 seconds)
+  -> MovL CUP_RECEIVE -> wait for cup -> MovL cup_to_coffee start -> cup_to_coffee
+  -> MovL COFFEE_POS -> wait for coffee (plus 2 seconds) -> MovL coffee_to_window start
   -> coffee_to_window (including release and fixture withdrawal) -> MovL HOME
 
 From the repository root:
   python teach_point.py HOME
+  python teach_point.py CUP_RECEIVE
+  python teach_point.py COFFEE_POS
+  python teach_point.py --move CUP_RECEIVE --linear --speed 5
   python record_trajectory.py pick_cup --duration 30 --rate 50
   python record_trajectory.py cup_to_coffee --duration 30 --rate 50
   python record_trajectory.py coffee_to_window --duration 30 --rate 50

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""用途：执行热美式流程：接杯 → 咖啡 → 出杯 → HOME。
+"""用途：热美式；轨迹负责站间移动，MovL 到精确点位后才启动设备等待。
+流程：HOME → pick_cup → CUP_RECEIVE → cup_to_coffee → COFFEE_POS → coffee_to_window → HOME。
 主要入口：PLAN 定义顺序；check_trajectories()/dry_run() 离线检查/预览；
           run() 使能并执行流程；wait_*_finished() 目前人工确认设备完成。
 根目录运行：
@@ -23,16 +24,20 @@ from recipe_common import inspect_workflow, operator_confirm, recipe_arguments
 from trajectory_player import LiveFeedback, TrajectoryPlayer
 
 WORKFLOW = 'americano'
-POINT_NAMES = ("HOME",)
+POINT_NAMES = ("HOME", "CUP_RECEIVE", "COFFEE_POS")
 
-# Segments stop at station waiting points. Files are shared in robot_config.json.
+# entry = planned MovL to a recorded start; point = MovL to a taught station.
 PLAN = [
     ('check_home', 'HOME', 'Verify the starting HOME pose and joints'),
     ('entry', 'pick_cup', 'MovL from HOME to the first pick-cup sample'),
     ('trajectory', 'pick_cup', 'Follow the shared cup-pickup trajectory'),
+    ('point', 'CUP_RECEIVE', 'MovL to the precise cup receiving point'),
     ('cup_signal', None, 'Wait for cup dispensing to finish'),
+    ('entry', 'cup_to_coffee', 'MovL from CUP_RECEIVE to the cup-to-coffee start'),
     ('trajectory', 'cup_to_coffee', 'Carry the cup to the coffee machine'),
+    ('point', 'COFFEE_POS', 'MovL to the precise coffee dispensing point'),
     ('coffee_signal', None, 'Wait for coffee dispensing to finish, then wait 2 seconds'),
+    ('entry', 'coffee_to_window', 'MovL from COFFEE_POS to the coffee-to-window start'),
     ('trajectory', 'coffee_to_window', 'Place and release the cup, then withdraw the fixture'),
     ('return_home', 'HOME', 'MovL from the cleared window position to HOME'),
 ]
@@ -79,6 +84,7 @@ def run(config, auto=False, commissioning=False):
                 if time.monotonic() >= deadline:
                     raise RuntimeError("Enable request succeeded but enabled feedback did not arrive.")
                 time.sleep(0.02)
+            expected = home
             try:
                 for index, (action, name, note) in enumerate(PLAN, 1):
                     print(f"\n[{index}/{len(PLAN)}] {note}")
@@ -88,18 +94,21 @@ def run(config, auto=False, commissioning=False):
                         wait_cup_drop_finished()
                     elif action == "coffee_signal":
                         wait_coffee_finished()
-                    elif action in ("entry", "trajectory", "return_home"):
+                    elif action in ("entry", "trajectory", "point", "return_home"):
                         if not auto:
                             operator_confirm(f"Ready: {note}. Confirm the complete arm/cup path is clear.")
                         if action == "entry":
-                            # A planned, verified connection, independent of small-error start margins.
-                            player.check_home(home)
-                            player.move_linear(trajectories[name].first)
+                            player.assert_target(expected)
+                            player.use_frames(trajectories[name])
+                            expected = trajectories[name].first
+                            player.move_linear(expected)
                         elif action == "trajectory":
                             player.play(trajectories[name])
+                            expected = trajectories[name].last
                         else:
-                            player.assert_target(trajectories["coffee_to_window"].last)
-                            player.move_linear(home)
+                            player.assert_target(expected)
+                            expected = config["points"][name]
+                            player.move_linear(expected)
                     else:
                         raise RuntimeError(f"Unknown workflow action: {action}")
             except (Exception, KeyboardInterrupt):

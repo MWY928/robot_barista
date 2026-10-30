@@ -64,13 +64,19 @@ class RetimingTests(unittest.TestCase):
                 recorder.process_and_save(raw, path, {})
 
     def test_failed_capture_only_raw_backup(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)/"take.json"
-            raw = take(); raw.update(error="disconnect", stop_reason="error")
-            with self.assertRaises(ValueError):
-                recorder.process_and_save(raw, path, {})
-            self.assertFalse(path.exists())
-            self.assertEqual(json.loads(path.with_name("take_raw.json").read_text()), raw)
+        for reason in ("disconnect", "one_sample"):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory)/"take.json"
+                raw = take()
+                if reason == "disconnect":
+                    raw.update(error="disconnect", stop_reason="error")
+                else:
+                    raw["samples"] = raw["samples"][:1]
+                    raw["sample_count"] = 1
+                with self.assertRaises(ValueError):
+                    recorder.process_and_save(raw, path, {})
+                self.assertFalse(path.exists())
+                self.assertEqual(json.loads(path.with_name("take_raw.json").read_text()), raw)
 
     def test_unretimable_gap_or_dynamics_rejected(self):
         raw = take()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""用途：离线平滑已录制轨迹并生成时间缩放的新副本，不连接机械臂。
+"""用途：离线重分配轨迹时间、降低指令加速度，生成新副本，不连接机械臂。
 处理：只调整时间戳，保留全部原始关节/位姿配对及状态，不做几何滤波或重采样，
 并用 trajectory_player.load_trajectory() 的同一套校验验证新轨迹。
 根目录运行（输出新文件，不覆盖原轨迹）：
@@ -126,7 +126,7 @@ def main():
         raise ValueError("sigma must be positive and rate must be 1..125 Hz.")
     (stretch, count, duration), path = smooth_trajectory(
         args.source, args.output, args.config, args.sigma, args.rate)
-    print(f"Smoothed trajectory saved: {path}")
+    print(f"Retimed trajectory saved: {path}")
     print(f"Time stretch: {stretch}x, duration: {duration:.2f}s, samples: {count}")
     print("Validated with the same offline checks as the player; replay_verified=False.")
     print("First physical run still needs --commissioning and a careful operator.")

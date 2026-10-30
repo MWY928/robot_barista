@@ -238,8 +238,8 @@ class TeachingTests(unittest.TestCase):
         self.config["points"]["HOME"] = point
         robot_common.write_config(self.config, self.path)
         before = self.path.read_bytes()
-        for accepted in (True, False):
-            with self.subTest(accepted=accepted):
+        for accepted, linear in ((True, False), (False, False), (True, True), (False, True)):
+            with self.subTest(accepted=accepted, linear=linear):
                 dashboard, move = Mock(), Mock()
                 move.connection._receive_timeout = 90
                 for obj, name, reply in (
@@ -247,6 +247,7 @@ class TeachingTests(unittest.TestCase):
                     (dashboard, "SpeedFactor", "0,{},SpeedFactor();"),
                     (dashboard, "EnableRobot", "0,{},EnableRobot();"),
                     (move, "MovJ", f"{0 if accepted else -1},{{42}},MovJ();"),
+                    (move, "MovL", f"{0 if accepted else -1},{{42}},MovL();"),
                 ):
                     command = getattr(obj, name)
                     command.__name__ = name
@@ -271,15 +272,21 @@ class TeachingTests(unittest.TestCase):
                         patch.object(teach_point, "TrajectoryPlayer", return_value=player), \
                         patch("builtins.input", return_value="Y"), contextlib.redirect_stdout(io.StringIO()):
                     if accepted:
-                        teach_point.move_point("HOME", self.path, speed=5)
+                        teach_point.move_point("HOME", self.path, speed=5, linear=linear)
                         player.wait_for_target.assert_called_once()
                         player.assert_target.assert_called_once_with(point)
                     else:
                         with self.assertRaises(RuntimeError):
-                            teach_point.move_point("HOME", self.path)
+                            teach_point.move_point("HOME", self.path, linear=linear)
                         player.wait_for_target.assert_not_called()
                         player.stop_after_error.assert_called_once()
-                move.MovJ.assert_called_once_with(point["joint"], robot_common.load_sdk().CoordinateType.JOINT, cp=0)
+                if linear:
+                    move.MovL.assert_called_once_with(point["pose"], robot_common.load_sdk().CoordinateType.CARTESIAN,
+                                                     user=0, tool=0, cp=0)
+                    move.MovJ.assert_not_called()
+                else:
+                    move.MovJ.assert_called_once_with(point["joint"], robot_common.load_sdk().CoordinateType.JOINT, cp=0)
+                    move.MovL.assert_not_called()
                 self.assertEqual(self.path.read_bytes(), before)
 
     def test_move_invalid_point_or_cancel_does_not_connect(self):
@@ -295,8 +302,8 @@ class TeachingTests(unittest.TestCase):
             connect.assert_not_called()
 
     def test_recipes_keep_their_plans_and_delegate_teaching(self):
-        for file, steps in (("Americano/nova2_coffee_v1_1.py", 8),
-                            ("IceAmericano/nova2_ice_coffee_v1_1.py", 10)):
+        for file, steps in (("Americano/nova2_coffee_v1_1.py", 12),
+                            ("IceAmericano/nova2_ice_coffee_v1_1.py", 16)):
             spec = importlib.util.spec_from_file_location("recipe_test", robot_common.ROOT / file)
             recipe = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(recipe)

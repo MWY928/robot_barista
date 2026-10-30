@@ -133,6 +133,33 @@ class PlaybackTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tp.load_trajectory("test", self.config)
 
+    def test_resampled_acceleration_reports_joint_and_phase(self):
+        for phase, positions in (("start", [0.0, 0.68, 1.36]),
+                                 ("path", [0.0, 0.0, 0.68]),
+                                 ("stop", [0.0, 0.34, 1.02])):
+            with self.subTest(phase=phase):
+                data = recording()
+                data["source"] = tp.RECORDING_SOURCE
+                data["samples"] = [
+                    {"t": index*0.04, "joint": [position, 0, 0, 0, 0, 0],
+                     "pose": [0.0]*6, "error_status": 0}
+                    for index, position in enumerate(positions)
+                ]
+                data["sample_count"] = len(data["samples"])
+                self.write_take(data=data)
+                self.config["trajectory_settings"] = {"playback_speed": 0.25}
+                with patch.object(tp, "connect") as connection:
+                    with self.assertRaises(ValueError) as failure:
+                        tp.single_trajectory("test", self.config, commissioning=True)
+                    connection.assert_not_called()
+                message = str(failure.exception)
+                self.assertIn("J1=106.250 deg/s^2 > 90.000 deg/s^2", message)
+                self.assertIn(f"phase={phase}", message)
+                self.assertIn("playback_t=", message)
+                # Slowing playback passes the same check without raising limits.
+                self.config["trajectory_settings"]["playback_speed"] = 0.1
+                tp.load_trajectory("test", self.config)
+
     def test_move_to_start(self):
         """Already at start: no move. Small offset: one checked correction."""
         self.write_take()
@@ -216,6 +243,17 @@ class PlaybackTests(unittest.TestCase):
                     self.monitor.state.side_effect = RuntimeError("stale")
                 with self.simulation(), self.assertRaises(RuntimeError):
                     player.play(trajectory)
+
+    def test_cancel_playback_before_alignment(self):
+        self.write_take()
+        player = self.rig(tp.load_trajectory("test", self.config), offset=1)
+        with self.robot_session(player):
+            tp._confirm_motion.side_effect = [None, RuntimeError("Operator aborted")]
+            with self.assertRaisesRegex(RuntimeError, "Operator aborted"):
+                tp.single_trajectory("test", self.config, commissioning=True)
+        self.assertEqual(self.events, [])
+        self.move.MovL.assert_not_called()
+        self.move.ServoJ.assert_not_called()
 
     def test_workflow_preflight(self):
         """Adjacent segments must join; a missing file must block connection."""

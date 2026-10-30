@@ -1,5 +1,5 @@
 """用途：两份咖啡配方共用的离线校验、命令行参数和人工确认。
-主要入口：inspect_workflow() 离线校验轨迹和段间衔接；recipe_arguments() 解析参数；
+主要入口：inspect_workflow() 离线校验轨迹、精确点位和 MovL 衔接；recipe_arguments() 解析参数；
           operator_confirm() 等待人工确认，本身不控制机械臂。
 本文件供配方导入；从根目录运行配方，例如：
   python Americano/nova2_coffee_v1_1.py --check-trajectories # 离线检查，不运动
@@ -12,7 +12,7 @@ from trajectory_player import describe_errors, limits_for, load_trajectory, stat
 
 
 def inspect_workflow(config, plan, workflow, require_verified=False, strict=True, report=True):
-    """Visit all segments in execution order, including their junctions."""
+    """Check the actual mixed trajectory/point plan before any connection."""
     errors, trajectories = [], {}
     limits = limits_for(config)
     validate_connection_config(config)
@@ -27,29 +27,44 @@ def inspect_workflow(config, plan, workflow, require_verified=False, strict=True
         errors.append("home_joint_tolerance_deg must be in (0, 10].")
     if require_verified and config.get("safe_routes_physically_verified", {}).get(workflow) is not True:
         errors.append(f"safe_routes_physically_verified.{workflow} is not true.")
-    previous = None
+    previous, previous_name, frames = None, None, None
     for index, (action, name, note) in enumerate(plan, 1):
         if report:
             print(f"{index:02d}. {note} | {action} {name or ''}")
-        if action != "trajectory":
+        if action not in ("check_home", "entry", "trajectory", "point", "return_home"):
             continue
         try:
-            trajectory = load_trajectory(name, config, require_verified=require_verified)
-            trajectories[name] = trajectory
-            if report:
-                print(f"    {trajectory.path.name}: {len(trajectory.samples)} samples, "
-                      f"{trajectory.duration:.2f}s recorded, "
-                      f"verified={trajectory.data.get('replay_verified') is True}")
-            if previous is not None:
-                junction = state_errors(previous.last, trajectory.first)
-                if previous.frames != trajectory.frames:
-                    raise ValueError(f"{previous.name} -> {name}: Tool/User frame definitions differ.")
-                if not within(junction, limits):
-                    raise ValueError(f"{previous.name} -> {name}: junction exceeds start margins: "
-                                     + describe_errors(junction))
+            if action in ("check_home", "point", "return_home"):
+                point = config.get("points", {}).get(name)
+                if not isinstance(point, dict) or not is_pose(point.get("pose")) or not is_pose(point.get("joint")):
+                    raise ValueError(f"Point {name} requires taught pose and joint data; use teach_point.py {name}.")
+                target, target_name = point, name
+            else:
+                if name not in trajectories:
+                    trajectories[name] = load_trajectory(name, config, require_verified=require_verified)
+                trajectory = trajectories[name]
+                if frames is not None and frames != trajectory.frames:
+                    raise ValueError(f"{name}: Tool/User frame definitions differ from the workflow.")
+                frames = trajectory.frames
+                target, target_name = trajectory.first, f"{name}.start"
                 if report:
-                    print("    Junction: " + describe_errors(junction))
-            previous = trajectory
+                    print(f"    {trajectory.path.name}: {len(trajectory.samples)} samples, "
+                          f"{trajectory.duration:.2f}s recorded, "
+                          f"verified={trajectory.data.get('replay_verified') is True}")
+            if previous is not None:
+                junction = state_errors(previous, target)
+                # Explicit entry/point/return actions are planned MovL routes.
+                # A trajectory without an entry still requires a nearby start.
+                if action == "trajectory" and not within(junction, limits):
+                    raise ValueError(f"{previous_name} -> {target_name}: junction exceeds start margins: "
+                                     + describe_errors(junction) + "; add/commission an explicit entry MovL.")
+                if report:
+                    label = "Start junction" if action == "trajectory" else "Planned MovL"
+                    print(f"    {label}: {previous_name} -> {target_name}: " + describe_errors(junction))
+            if action == "trajectory":
+                previous, previous_name = trajectory.last, f"{name}.end"
+            else:
+                previous, previous_name = target, target_name
         except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append(f"{name}: {exc}")
             previous = None  # Do not compare non-adjacent segments across a missing recording.

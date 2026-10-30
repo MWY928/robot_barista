@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """用途：通过 30004 反馈端口录制关节/TCP 轨迹，不使能、不发送运动指令。
-主要入口：FeedbackReader.read() 读取完整帧；capture() 采样；save_recording() 保存且不覆盖旧文件。
+主要入口：capture() 采样；process_and_save() 保留原始备份并做时间重分配，通过校验后保存。
 根目录运行（先在机器人端准备好拖拽/示教模式，开始后 Ctrl+C 结束并保存）：
   python record_trajectory.py pick_cup --duration 30 --rate 50
-输出：trajectories/pick_cup.json；每次录制使用新名称，避免覆盖。
+输出：pick_cup_raw.json 原始备份、pick_cup.json 时间处理结果，均在 trajectories/ 下且不覆盖。
 """
 
 import argparse
@@ -213,13 +213,11 @@ def main():
         result = capture(connection, dtype, config, args.duration, args.rate, args.timeout, args.name)
     if not result["samples"]:
         raise RuntimeError(result["error"] or "No samples captured; no output file was written.")
-    result = process_and_save(result, output, config)
-    print(f"Saved {result['sample_count']} samples to {output} ({result['stop_reason']}).")
-    print(f"Average {result['average_rate_hz']:.1f} Hz; maximum sample gap {result['max_sample_gap_s']:.3f}s.")
-    if result["error"]:
-        raise RuntimeError(f"Partial take saved; recording failed: {result['error']}")
-    if not result["has_multiple_samples"]:
-        raise RuntimeError("Take saved, but fewer than two samples cannot describe a trajectory.")
+    print(f"Captured {result['sample_count']} samples ({result['stop_reason']}), "
+          f"average {result['average_rate_hz']:.1f} Hz; maximum sample gap {result['max_sample_gap_s']:.3f}s.")
+    processed = process_and_save(result, output, config)
+    print(f"Saved to {output}; processed timeline: {processed['recorded_duration_s']:.3f}s. "
+          f"Raw backup: {output.with_name(output.stem + '_raw' + output.suffix)}")
 
 
 if __name__ == "__main__":

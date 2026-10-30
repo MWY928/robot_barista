@@ -142,7 +142,6 @@ class Trajectory:
 
 def load_trajectory(name, config, require_verified=False):
     """Validate the complete take before allowing any robot connection."""
-    limits = limits_for(config)
     entry = config.get("trajectories", {}).get(name)
     if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
         raise ValueError(f"No file configured for trajectory {name!r}.")
@@ -220,8 +219,17 @@ def validate_recording(data, config, name="recording", path=None,
         next_velocity = [(b-a)/period for a, b in zip(previous_joint, joint)]
         if max(map(abs, next_velocity)) > limits["max_joint_speed_deg_s"]:
             raise ValueError(f"{name}: resampled joint speed exceeds the limit.")
-        if max(abs(a-b)/period for a, b in zip(velocity, next_velocity)) > limits["max_joint_acceleration_deg_s2"]:
-            raise ValueError(f"{name}: resampled acceleration/start/stop exceeds the limit.")
+        acceleration = [abs(a-b)/period for a, b in zip(velocity, next_velocity)]
+        joint_index = max(range(6), key=acceleration.__getitem__)
+        if acceleration[joint_index] > limits["max_joint_acceleration_deg_s2"]:
+            phase = "start" if index == 1 else "stop" if index > count else "path"
+            raise ValueError(
+                f"{name}: resampled acceleration/start/stop exceeds the limit: "
+                f"J{joint_index+1}={acceleration[joint_index]:.3f} deg/s^2 > "
+                f"{limits['max_joint_acceleration_deg_s2']:.3f} deg/s^2 "
+                f"(cycle={index}, playback_t={index*period:.3f}s, phase={phase}, "
+                f"playback_speed={limits['playback_speed']:g}). "
+                "Try a lower playback_speed or rerecord with smoother motion.")
         previous_joint, velocity = joint, next_velocity
     return trajectory
 
@@ -374,7 +382,7 @@ class TrajectoryPlayer:
 
     def check_start(self, trajectory, require_enabled=False):
         """Read live state and reject mismatched frames or excessive start error."""
-        self.use_frames(trajectory)
+        self.frames = trajectory.frames
         state = self.state(require_enabled=require_enabled)
         errors = state_errors(state, trajectory.first)
         if not within(errors, self.limits):
@@ -476,10 +484,12 @@ def single_trajectory(name, config=None, *, commissioning=False, align_only=Fals
                     if time.monotonic() >= deadline:
                         raise RuntimeError("Enabled feedback did not arrive.")
                     time.sleep(0.02)
-                player.ensure_start(trajectory)
-                print("Start reached and checked.")
-                if not align_only:
-                    _confirm_motion("Play this recorded segment once? Confirm the complete arm/cup path is clear.")
+                if align_only:
+                    player.ensure_start(trajectory)
+                    print("Start reached and checked.")
+                else:
+                    _confirm_motion("Align to the start and play this segment once? "
+                                    "Confirm the complete arm/cup path is clear.")
                     player.play(trajectory)
                     print("Recorded endpoint reached and checked.")
                 return player.state()

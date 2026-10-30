@@ -1,11 +1,16 @@
 # Robot Barista
 
-Python workflows for a DOBOT Nova 2 coffee workstation. Each recipe combines shared recorded motion segments with dispenser completion checks. Only the planned HOME entry/return connections and small start corrections use `MovL`.
+Python workflows for a DOBOT Nova 2 coffee workstation. Recorded trajectories carry the cup between stations; explicit `MovL` connections reach taught station points before dispenser waits, then connect to the next trajectory start.
+
+Americano: `HOME -> pick_cup -> CUP_RECEIVE -> cup_to_coffee -> COFFEE_POS -> coffee_to_window -> HOME`.
+
+Ice Americano: `HOME -> pick_cup -> CUP_RECEIVE -> cup_to_ice -> ICE_POS -> ice_to_coffee -> COFFEE_POS -> coffee_to_window -> HOME`.
 
 ## Project layout
 
 - `robot_config.json`: shared robot settings, HOME, trajectory file mapping, playback limits, and workflow verification flags.
-- `record_trajectory.py`: passive recording of timed joint/TCP feedback.
+- `record_trajectory.py`: passive capture, exclusive raw backup, and validated time processing.
+- `smooth_trajectory.py`: offline time redistribution of an existing take, preserving all joint/pose pairs.
 - `trajectory_player.py`: recording validation, start alignment, continuous `ServoJ` playback, live tracking, and endpoint checks.
 - `recipe_common.py`: offline workflow inspection and shared CLI helpers.
 - `Americano/`, `IceAmericano/`: recipe `PLAN` definitions, dispenser waits, and `check_trajectories()` functions.
@@ -75,7 +80,13 @@ python robot_common.py --enable
 
 `--enable` sends only `EnableRobot()` on the command connection. It does not select User/Tool frames, so a rejected frame-selection command cannot prevent the enable request from being sent. Teaching and motion still select their configured frames.
 
-Teaching reads a stationary pose and joints; enter `SAVE` to update the shared JSON. It resets all workflow verification flags. New waypoint names are supported, and `--list` lists existing points. Recipe `--teach POINT` commands remain aliases. Segmented recipes require only HOME in the point table; other existing taught points are preserved for future use.
+Teaching reads a stationary pose and joints; enter `SAVE` to update the shared JSON. It resets all workflow verification flags. New waypoint names are supported, and `--list` lists existing points. Recipe `--teach POINT` commands remain aliases. Americano requires `HOME`, `CUP_RECEIVE`, and `COFFEE_POS`; Ice Americano also requires `ICE_POS`. Each requires both pose and joints. Teach the missing station points before commissioning:
+
+```powershell
+python teach_point.py CUP_RECEIVE
+python teach_point.py COFFEE_POS
+python teach_point.py ICE_POS
+```
 
 To physically inspect a saved waypoint, move the robot to it:
 
@@ -83,9 +94,11 @@ To physically inspect a saved waypoint, move the robot to it:
 python teach_point.py --move HOME
 # Optional lower speed factor:
 python teach_point.py --move HOME --speed 5
+# PHYSICAL MOTION: test the same linear approach used by the recipes:
+python teach_point.py --move CUP_RECEIVE --linear --speed 5
 ```
 
-This reads `points.HOME` from `robot_config.json`, displays the saved values, and asks for `Y` before enabling and moving. V4 `MovJ(joint={...})` restores the saved six joint angles so you can inspect the recorded arm configuration in physical space. The complete joint-motion path must be clear; it is not a TCP straight-line move or obstacle-avoiding route. Actual joints, TCP arrival, and queue completion are checked using live feedback. The command does not overwrite the saved point and leaves the robot enabled. Use the same command with another saved point name.
+This reads the saved point from `robot_config.json`, displays its values, and asks for `Y` before enabling and moving. The default uses V4 `MovJ(joint={...})` to restore saved joints. `--linear` explicitly uses `MovL(pose={...})` with the configured User/Tool frames, matching the recipes' precise point approaches. Actual joints, TCP arrival, and queue completion are checked using live feedback. Position at the intended approach first and verify the entire chosen path; neither method avoids obstacles. The command leaves saved data intact and the robot enabled.
 
 ## Record shared segments
 
@@ -93,10 +106,10 @@ Recipe scripts already reserve the segment names and their execution order in `P
 
 | Segment name | Default file | Movement to record |
 | --- | --- | --- |
-| `pick_cup` | `trajectories/pick_cup.json` | Open approach position to cup receiving position |
-| `cup_to_coffee` | `trajectories/cup_to_coffee.json` | Cup receiving position to coffee outlet |
-| `cup_to_ice` | `trajectories/cup_to_ice.json` | Cup receiving position to ice/water outlet |
-| `ice_to_coffee` | `trajectories/ice_to_coffee.json` | Ice/water outlet to coffee outlet |
+| `pick_cup` | `trajectories/pick_cup.json` | HOME/approach to near `CUP_RECEIVE`; finish with a separate MovL to that point |
+| `cup_to_coffee` | `trajectories/cup_to_coffee.json` | Cup station departure to near `COFFEE_POS`; finish with a separate MovL |
+| `cup_to_ice` | `trajectories/cup_to_ice.json` | Cup station departure to near `ICE_POS`; finish with a separate MovL |
+| `ice_to_coffee` | `trajectories/ice_to_coffee.json` | Ice/water station departure to near `COFFEE_POS`; finish with a separate MovL |
 | `coffee_to_window` | `trajectories/coffee_to_window.json` | Coffee outlet through cup placement, release, and fixture withdrawal |
 
 Record the names needed by your recipe. Using a reserved name saves to its default file, so the existing recipe can find it without editing its script. Both recipes reference `pick_cup` and `coffee_to_window`; validate shared segments for each recipe's actual cup/payload conditions.
@@ -111,7 +124,7 @@ python record_trajectory.py pick_cup --duration 30 --rate 50
 2. Run the command, press Enter, and wait for `Recording started` before moving.
 3. Perform the complete movement, including any withdrawal, corridor, or approach needed. Start and end with the arm at rest.
 4. Press `Ctrl+C` once the movement is complete, or let `--duration` end recording. Samples are saved automatically; no `SAVE` input is required for trajectories.
-5. Record the next segment from the preceding segment's endpoint, matching both tool pose and joint configuration. Operate the dispenser between recordings; the recipe's callback handles the equipment wait during execution.
+5. Teach the precise station point separately. Prefer starting the outgoing segment at that point; alternatively choose a departure start reachable by a physically verified straight connection. The recipe explicitly moves from the precise point to this recorded start before replay. The previous trajectory's endpoint and next trajectory's start no longer need to coincide across a taught station point.
 
 Repeat with the other required names, for example:
 
@@ -123,7 +136,9 @@ python record_trajectory.py coffee_to_window --duration 30 --rate 50
 
 The first approach position must be reachable from HOME by the separately verified entry `MovL`. Finish `coffee_to_window` with the fixture clear of the cup/window so the planned return to HOME is possible.
 
-Recordings default to `trajectories/NAME.json`. Existing files are not overwritten; use another take name and update the corresponding `trajectories` entry in the shared JSON. See [segment recording notes](trajectories/README.md) for the required names and boundaries.
+Recording first saves an untouched `trajectories/NAME_raw.json` backup. It then redistributes sample times and saves `trajectories/NAME.json` only after the full player validation passes. All joint/pose pairs, status fields, and endpoints are preserved; no geometric filter or resampling is applied. Processing failure leaves only the raw backup. Both paths are exclusive: use a new take name and update its mapping. See [segment recording notes](trajectories/README.md) for boundaries.
+
+Existing recordings and catalog choices are retained. Replay a tested copy by its registered name, such as `pick_cup_smooth` or `pick_cup_smooth_trimmed`. To use a tested copy in a recipe, explicitly set that recipe segment's logical file mapping; recording and playback never automatically replace an existing selection.
 
 For example, after recording `pick_cup_002`, keep the recipe's logical name and change only its file mapping:
 
@@ -133,7 +148,15 @@ For example, after recording `pick_cup_002`, keep the recipe's logical name and 
 
 Recording does not automatically register a new logical segment or mark it as verified. After recording, follow the inspection and commissioning steps below.
 
-Each file includes time-stamped `joint` and `pose` samples, Tool/User definitions, capture status, and `replay_verified`. Time `t` is host receive time; the original controller timestamp is retained separately. `--rate` is a maximum retained rate, not a guaranteed sampling frequency. The recorder sends no enable, motion, or drag-mode commands.
+Each file includes time-stamped `joint` and `pose` samples, Tool/User definitions, capture status, and `replay_verified`. In raw backups, `t` is host receive time; processed files label retimed `t` in `units` and describe the operation in `time_processing`. Original controller timestamps remain unchanged. `--rate` is a maximum retained rate, not a guaranteed sampling frequency. The recorder sends no enable, motion, or drag-mode commands.
+
+To time-process an existing catalog entry into a new registered copy:
+
+```powershell
+python smooth_trajectory.py pick_cup pick_cup_processed_002
+```
+
+This does not automatically replace the recipe's logical mapping. Time processing slows the commands enough to meet the current dynamics limits; it does not remove geometric noise. Playback always validates again using the current settings, and processed takes remain `replay_verified=false` until physical commissioning.
 
 ## Inspect, commission, and run
 
@@ -150,9 +173,9 @@ python Americano/nova2_coffee_v1_1.py --check-trajectories
 python Americano/nova2_coffee_v1_1.py --check-steps
 ```
 
-`check_trajectories(config)` follows the recipe's actual order, checks every take and adjacent endpoints, and does not connect to hardware. It checks timestamps, gaps, frame metadata, controller errors, and configured motion limits. Each recipe keeps this function as its inspection entry point.
+`check_trajectories(config)` follows the actual mixed plan without connecting. It validates all required point pose/joint data and trajectory files, checks common frame definitions, and reports distances/orientation/joint differences for each planned MovL. It compares each trajectory start against its preceding action, including inserted station points. Explicit `entry` actions authorize planned connections; without one, the normal small start margins still apply. Each recipe retains this inspection entry point.
 
-`--check-steps` **moves the robot** and allows takes whose verification flags are still false. It retains file, margin, live-feedback, timing, and endpoint checks; it requires `Y` before each motion step and waits for manual dispenser confirmation. Use it to physically verify the full arm/fixture/cup path, cup orientation, and HOME connections. It never automatically marks a take or workflow as verified.
+`--check-steps` **moves the robot** and allows unverified takes. It requires `Y` before every entry MovL, trajectory, station-point MovL, and return, and waits for manual dispenser confirmation only after the precise point has been reached. It retains feedback, timing, and arrival checks and never changes verification flags automatically. Commission each precise approach and departure connection as well as the recorded paths and HOME return. The existing pickup endpoint is about 46 mm from the current `CUP_RECEIVE`, so that approach is a real additional movement.
 
 After successful physical validation, set `replay_verified` to `true` in each validated recording and set `safe_routes_physically_verified[WORKFLOW]` to `true` in the shared JSON. Manually place the robot at HOME, then execute:
 
@@ -185,7 +208,7 @@ python trajectory_player.py pick_cup --commissioning
 
 `single_trajectory()` loads the actual mapped recording, checks live state before enabling, confirms motion with the operator, aligns within the shared margins, plays, and checks the endpoint. Position near the recorded start first; larger errors raise an exception. It returns the final feedback state and leaves verification flags unchanged. Enable state is not automatically cleared on exit.
 
-The call chain is `single_trajectory()` -> `check_start()` -> `ensure_start()` -> `play()` -> endpoint check. These are runtime checks used by application code. `test_reject_unsafe_start` and the other `test_*` functions under `tests/` are independent unittest checks of that behavior; they are not called to operate the robot. No separate trial script is needed.
+`single_trajectory()` checks the start before enabling, then confirms the requested action. With `align_only=True` it calls `ensure_start()` and returns. Otherwise `play()` performs start alignment once, replays, and waits for arrival. These are runtime operations; the independent `test_*` functions under `tests/` do not operate the robot.
 
 `trajectory_settings` in the shared JSON applies to all recipes. Initial values are commissioning defaults, not validated workstation limits:
 
@@ -195,12 +218,12 @@ The call chain is `single_trajectory()` -> `check_start()` -> `ensure_start()` -
 | `start_orientation_margin_deg` | 3 | Maximum rotation-angle error allowed for a start correction |
 | `start_joint_margin_deg` | 5 | Maximum error of any joint; revolutions are not wrapped |
 | `arrival_position_mm` / `arrival_orientation_deg` / `arrival_joint_deg` | 0.5 / 0.5 / 1 | Required arrival tolerances |
-| `playback_speed` | 0.25 | Recorded-time playback ratio, at most 1 |
+| `playback_speed` | 0.35 | Playback ratio relative to the selected file's timeline, at most 1 |
 | `servo_period_s` | 0.04 | Fixed command period in seconds |
 
 Before every segment, the player checks the actual live pose, joints, and coordinate frames. A start already within arrival tolerance needs no correction. A larger error within all three start margins triggers a `MovL` correction and another actual-state check. Any exceeded margin aborts the workflow.
 
-Playback interpolates recorded joint samples onto the fixed command period and sends `ServoJ` targets with a timed schedule. It does not stop at every recorded point. A final segment check requires the arm to reach the recorded endpoint and settle. The initial HOME connection and final return are separately planned `MovL` moves, not large automatic start corrections.
+Playback interpolates joint samples onto the fixed command period and sends timed `ServoJ` targets. Each segment ends with a confirmed settled arrival. The recipe then executes its explicit `point` MovL to reach the taught station, waits for the equipment callback, and executes its `entry` MovL to the next recorded start. These planned routes are independent of small-error start correction margins and must be physically commissioned. `coffee_to_window` still includes placement/release and withdrawal; the recipe returns HOME from its cleared endpoint.
 
 Live stale feedback, controller errors, changed frames, excessive tracking error, and missed command deadlines abort execution. After motion has been issued, an interruption triggers a best-effort V4 `Stop()` request. Always check the actual robot state; network disconnection and stop acknowledgements do not guarantee a physical stop.
 

@@ -5,8 +5,9 @@ Player: ../trajectory_player.py
 
 Plan:
   Verify HOME -> MovL to pick_cup start -> pick_cup
-  -> wait for cup -> cup_to_ice -> wait for ice and water
-  -> ice_to_coffee -> wait for espresso (plus 2 seconds)
+  -> MovL CUP_RECEIVE -> wait for cup -> MovL cup_to_ice start -> cup_to_ice
+  -> MovL ICE_POS -> wait for ice and water -> MovL ice_to_coffee start -> ice_to_coffee
+  -> MovL COFFEE_POS -> wait for espresso (plus 2 seconds) -> MovL coffee_to_window start
   -> coffee_to_window (including release and fixture withdrawal) -> MovL HOME
 
 Shared with Americano where physically compatible: pick_cup and coffee_to_window.
@@ -16,6 +17,8 @@ From the repository root, record the required segments using:
   python record_trajectory.py NAME --duration 30 --rate 50
 Use NAME = pick_cup, cup_to_ice, ice_to_coffee or coffee_to_window.
 Teach HOME with python teach_point.py HOME.
+Also teach CUP_RECEIVE, ICE_POS and COFFEE_POS with the same command.
+Test a precise linear approach with python teach_point.py --move ICE_POS --linear --speed 5.
 
 Inspect all segments in recipe order without connecting:
   python IceAmericano/nova2_ice_coffee_v1_1.py --dry-run

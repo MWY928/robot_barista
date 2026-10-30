@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """用途：示教保存静态点位，或移动到已保存点位。
 主要入口：teach_point() 读取当前关节/位姿，输入 SAVE 后保存，不发送运动指令；
-          move_point() 确认后使能，以 MovJ 移动并等待到位。
+          move_point() 确认后使能并等待到位；默认 MovJ，linear=True 使用 MovL。
 根目录运行：
   python teach_point.py HOME                 # 示教保存 HOME
   python teach_point.py --list               # 离线列出点位
   python teach_point.py --move HOME --speed 5 # 会运动：移动到已保存的 HOME
+  python teach_point.py --move CUP_RECEIVE --linear --speed 5 # 会运动：直线测试精确点位
 """
 
 import argparse
@@ -54,8 +55,8 @@ def teach_point(name, config_path=CONFIG_FILE):
     return True
 
 
-def move_point(name, config_path=CONFIG_FILE, speed=None):
-    """Move to the saved joints and confirm actual joint/TCP arrival."""
+def move_point(name, config_path=CONFIG_FILE, speed=None, *, linear=False):
+    """Move to a saved point by MovJ or explicit MovL, then check arrival."""
     config = read_config(config_path)
     point = config.get("points", {}).get(name)
     if not isinstance(point, dict) or not is_pose(point.get("joint")) or not is_pose(point.get("pose")):
@@ -66,7 +67,8 @@ def move_point(name, config_path=CONFIG_FILE, speed=None):
     print(f"Move to saved point: {name}")
     print(f"  joint (deg): {point['joint']}")
     print(f"  pose (mm/deg): {point['pose']}")
-    print(f"MovJ(joint=...) at speed factor {speed}%. Confirm the full arm/fixture path is clear.")
+    method = "MovL(pose=...)" if linear else "MovJ(joint=...)"
+    print(f"{method} at speed factor {speed}%. Confirm the full arm/fixture path is clear.")
     if input("Type Y to enable and move; any other input cancels: ").strip().upper() != "Y":
         print("Movement cancelled.")
         return None
@@ -91,8 +93,13 @@ def move_point(name, config_path=CONFIG_FILE, speed=None):
                     player.state()
                     started = time.monotonic()
                     player.motion_started = True
-                    command_id = send_queued_command(
-                        move.MovJ, point["joint"], load_sdk().CoordinateType.JOINT, cp=0)
+                    if linear:
+                        command_id = send_queued_command(
+                            move.MovL, point["pose"], load_sdk().CoordinateType.CARTESIAN,
+                            user=config.get("user_index", 0), tool=config.get("tool_index", 0), cp=0)
+                    else:
+                        command_id = send_queued_command(
+                            move.MovJ, point["joint"], load_sdk().CoordinateType.JOINT, cp=0)
                     player.wait_for_target(point, after=started, timeout=player.limits["linear_timeout_s"],
                                            command_id=command_id)
                     player.assert_target(point)
@@ -110,10 +117,13 @@ def main():
     action.add_argument("--list", action="store_true", help="list shared waypoint names without connecting")
     action.add_argument("--move", metavar="POINT", help="enable and MovJ(joint=...) to a saved point, e.g. HOME")
     parser.add_argument("--speed", type=int, help="speed factor for --move (1-100; defaults to shared setting)")
+    parser.add_argument("--linear", action="store_true", help="use MovL for --move, matching the recipe's point approach")
     parser.add_argument("--config", type=Path, default=CONFIG_FILE, help="shared configuration path")
     args = parser.parse_args()
     if args.speed is not None and not args.move:
         parser.error("--speed requires --move")
+    if args.linear and not args.move:
+        parser.error("--linear requires --move")
     if args.point and (args.list or args.move):
         parser.error("use either a point name to teach, --list, or --move POINT")
     if args.list:
@@ -122,7 +132,7 @@ def main():
         for name in read_config(args.config).get("points", {}):
             print(name)
     elif args.move:
-        move_point(args.move, args.config, speed=args.speed)
+        move_point(args.move, args.config, speed=args.speed, linear=args.linear)
     elif args.point:
         teach_point(args.point, args.config)
     else:
