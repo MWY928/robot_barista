@@ -20,12 +20,12 @@
         0.0009
       ],
       "pose": [
-        189.5318,
+        189.5319,
         9.6691,
-        403.4223,
-        90.6091,
+        403.4222,
+        90.6092,
         -0.0111,
-        55.0567
+        55.0566
       ]
     },
     "SAFE_CUP": {
@@ -65,8 +65,22 @@
       ]
     },
     "CUP_RECEIVE": {
-      "joint": null,
-      "pose": null
+      "joint": [
+        129.5704,
+        45.8709,
+        54.1225,
+        78.5107,
+        125.8591,
+        -0.3716
+      ],
+      "pose": [
+        367.4337,
+        -341.09,
+        261.2149,
+        88.7877,
+        -0.5047,
+        3.7128
+      ]
     },
     "SAFE_ICE": {
       "pose": null,
@@ -130,7 +144,7 @@
     "command_timeout_s": 2.0,
     "settle_joint_speed_deg_s": 0.5,
     "servo_period_s": 0.04,
-    "playback_speed": 0.25,
+    "playback_speed": 0.35,
     "max_command_lag_s": 0.04,
     "max_tracking_error_deg": 5.0,
     "max_sample_gap_s": 0.2,
@@ -156,6 +170,12 @@
     },
     "coffee_to_window": {
       "file": "trajectories/coffee_to_window.json"
+    },
+    "pick_cup_smooth": {
+      "file": "trajectories/pick_cup_smooth.json"
+    },
+    "pick_cup_smooth_trimmed": {
+      "file": "trajectories/pick_cup_smooth_trimmed.json"
     }
   }
 }

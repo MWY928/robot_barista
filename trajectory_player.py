@@ -39,7 +39,7 @@ DEFAULT_LIMITS = {
     "command_timeout_s": 2.0,
     "settle_joint_speed_deg_s": 0.5,
     "servo_period_s": 0.04,
-    "playback_speed": 0.25,
+    "playback_speed": 0.35,
     "max_command_lag_s": 0.04,
     "max_tracking_error_deg": 5.0,
     "max_sample_gap_s": 0.2,
@@ -150,6 +150,13 @@ def load_trajectory(name, config, require_verified=False):
     path = path if path.is_absolute() else ROOT / path
     with path.open(encoding="utf-8") as f:
         data = json.load(f)
+    return validate_recording(data, config, name, path, require_verified)
+
+
+def validate_recording(data, config, name="recording", path=None,
+                       require_verified=False, *, check_dynamics=True):
+    """Shared in-memory validation. Structural-only mode never authorizes replay."""
+    limits = limits_for(config)
     if not isinstance(data, dict):
         raise ValueError(f"{name}: recording must be a JSON object.")
     if data.get("schema_version") != 1 or data.get("source") != RECORDING_SOURCE:
@@ -182,6 +189,8 @@ def load_trajectory(name, config, require_verified=False):
         gap = t-previous["t"]
         if not 0 < gap <= limits["max_sample_gap_s"]:
             raise ValueError(f"{name}: non-increasing time or excessive sample gap at {index}.")
+        if not check_dynamics:
+            continue
         dt = gap / limits["playback_speed"]
         velocity = [(b-a)/dt for a, b in zip(previous["joint"], sample["joint"])]
         if max(map(abs, velocity)) > limits["max_joint_speed_deg_s"]:
@@ -197,6 +206,8 @@ def load_trajectory(name, config, require_verified=False):
                 raise ValueError(f"{name}: joint acceleration limit exceeded at sample {index}.")
         previous_velocity, previous_dt = velocity, dt
     trajectory = Trajectory(name, path, data)
+    if not check_dynamics:
+        return trajectory
     # Validate the actual fixed-period targets too, including start and end at rest.
     period = limits["servo_period_s"]
     count = math.ceil(trajectory.duration / limits["playback_speed"] / period)

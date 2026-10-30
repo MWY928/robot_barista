@@ -161,10 +161,26 @@ def capture(connection, dtype, config, duration, rate, timeout, name):
 def save_recording(recording, path):
     """Use exclusive creation: an existing take is never overwritten."""
     path = Path(path)
+    payload = json.dumps(recording, indent=2, ensure_ascii=False, allow_nan=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as f:
-        json.dump(recording, f, indent=2, ensure_ascii=False, allow_nan=False)
-        f.write("\n")
+        f.write(payload + "\n")
+
+
+def process_and_save(recording, path, config):
+    """Keep exclusive raw backup; failures never create a processed take."""
+    from smooth_trajectory import retime_recording
+    path = Path(path)
+    raw = path.with_name(path.stem + "_raw" + path.suffix)
+    if path.exists() or raw.exists():
+        raise FileExistsError("Output or raw backup exists; choose a new take name.")
+    save_recording(recording, raw)
+    try:
+        processed = retime_recording(recording, config)
+    except ValueError as exc:
+        raise ValueError(f"Raw backup saved to {raw}; no processed output: {exc}") from exc
+    save_recording(processed, path)
+    return processed
 
 
 def main():
@@ -183,7 +199,7 @@ def main():
         if not math.isfinite(value) or not 0 < value <= maximum:
             parser.error(f"--{key} must be in (0, {maximum}]")
     output = args.output or ROOT / "trajectories" / f"{args.name}.json"
-    if output.exists():
+    if output.exists() or output.with_name(output.stem + "_raw" + output.suffix).exists():
         raise FileExistsError(f"{output} already exists. Choose a new take name or output path.")
     config = read_config(args.config)
     validate_connection_config(config)
@@ -197,7 +213,7 @@ def main():
         result = capture(connection, dtype, config, args.duration, args.rate, args.timeout, args.name)
     if not result["samples"]:
         raise RuntimeError(result["error"] or "No samples captured; no output file was written.")
-    save_recording(result, output)
+    result = process_and_save(result, output, config)
     print(f"Saved {result['sample_count']} samples to {output} ({result['stop_reason']}).")
     print(f"Average {result['average_rate_hz']:.1f} Hz; maximum sample gap {result['max_sample_gap_s']:.3f}s.")
     if result["error"]:

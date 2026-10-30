@@ -21,7 +21,7 @@ def recording(start=0, verified=True):
     samples = [{"t": index*0.04, "joint": [start+index*0.004, 0, 0, 0, 0, 0],
                 "pose": [start+index*0.004, 0, 0, 0, 0, 0], "error_status": 0}
                for index in range(4)]
-    return {"schema_version": 1, "source": "dobot_v3_feedback_30004",
+    return {"schema_version": 1, "source": tp.RECORDING_SOURCE,
             "stop_reason": "interrupted", "error": None, "replay_verified": verified,
             "feedback_frames": copy.deepcopy(FRAMES), "sample_count": len(samples), "samples": samples}
 
@@ -58,7 +58,8 @@ class PlaybackTests(unittest.TestCase):
         self.current = copy.deepcopy(trajectory.first)
         self.current["pose"][0] += offset
         self.current.update(frames=copy.deepcopy(FRAMES), enable_status=1,
-                            drag_status=0, error_status=0, joint_velocity=[0.]*6)
+                            drag_status=0, error_status=0, joint_velocity=[0.]*6,
+                            current_command_id=42, running_status=0)
         self.events = []
         self.socket = Mock()
         self.socket.gettimeout.return_value = 90
@@ -71,17 +72,17 @@ class PlaybackTests(unittest.TestCase):
 
         self.monitor.state.side_effect = state
 
-        def movl(*pose):
+        def movl(pose, *args, **kwargs):
             self.events.append("MovL")
             self.current["pose"] = list(pose)
             self.current["joint"] = list(trajectory.first["joint"])
-            return "0,{},MovL();"
+            return "0,{42},MovL();"
 
-        def servoj(*args):
+        def servoj(target, **kwargs):
             self.events.append("ServoJ")
-            self.current["joint"] = list(args[:6])
-            self.current["pose"] = list(args[:6])
-            return "0,{},ServoJ();"
+            self.current["joint"] = list(target)
+            self.current["pose"] = list(target)
+            return "0,{42},ServoJ();"
 
         for name, side_effect in (("MovL", movl), ("ServoJ", servoj),
                                   ("Sync", lambda: (self.events.append("Sync"), "0,{},Sync();")[1])):
@@ -136,7 +137,7 @@ class PlaybackTests(unittest.TestCase):
         """Already at start: no move. Small offset: one checked correction."""
         self.write_take()
         trajectory = tp.load_trajectory("test", self.config)
-        for offset, expected in ((0, []), (1, ["MovL", "Sync"])):
+        for offset, expected in ((0, []), (1, ["MovL"])):
             with self.subTest(offset=offset):
                 player = self.rig(trajectory, offset=offset)
                 with self.simulation():
@@ -168,7 +169,7 @@ class PlaybackTests(unittest.TestCase):
         player = self.rig(trajectory)
         self.current["joint"][0] += 2
         player.limits["linear_timeout_s"] = 0.03
-        self.move.MovL.side_effect = lambda *args: "0,{},MovL();"
+        self.move.MovL.side_effect = lambda *args, **kwargs: "0,{42},MovL();"
         with self.simulation(), self.assertRaisesRegex(RuntimeError, "Endpoint"):
             player.play(trajectory)
         self.assertNotIn("ServoJ", self.events)
@@ -182,14 +183,14 @@ class PlaybackTests(unittest.TestCase):
                 player = self.rig(trajectory, offset=1)
                 with self.robot_session(player):
                     state = tp.single_trajectory("test", self.config, commissioning=True, align_only=align_only)
-                self.assertEqual(self.events[:2], ["MovL", "Sync"])
+                self.assertEqual(self.events[:1], ["MovL"])
                 if align_only:
-                    self.assertEqual(self.events, ["MovL", "Sync"])
+                    self.assertEqual(self.events, ["MovL"])
                     self.assertEqual(state["joint"], trajectory.first["joint"])
                 else:
                     self.assertGreater(self.events.count("ServoJ"), 1)
-                    self.assertEqual(self.events.count("Sync"), 2)  # alignment + segment end
-                    self.assertEqual(self.events[-1], "Sync")
+                    self.assertEqual(self.events.count("Sync"), 0)  # V4 uses queue feedback.
+                    self.assertEqual(self.events[-1], "ServoJ")
                     self.assertEqual(state["joint"], trajectory.last["joint"])
 
     def test_abort_unhealthy_playback(self):
@@ -202,15 +203,15 @@ class PlaybackTests(unittest.TestCase):
                 if mode == "late":
                     original = self.move.ServoJ.side_effect
 
-                    def slow(*args):
-                        result = original(*args)
+                    def slow(*args, **kwargs):
+                        result = original(*args, **kwargs)
                         self.clock.now += 0.2
                         return result
 
                     self.move.ServoJ.side_effect = slow
                 elif mode == "tracking":
                     player.limits["max_tracking_error_deg"] = 0.00001
-                    self.move.ServoJ.side_effect = lambda *args: "0,{},ServoJ();"
+                    self.move.ServoJ.side_effect = lambda *args, **kwargs: "0,{42},ServoJ();"
                 else:
                     self.monitor.state.side_effect = RuntimeError("stale")
                 with self.simulation(), self.assertRaises(RuntimeError):
