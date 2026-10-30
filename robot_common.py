@@ -5,7 +5,7 @@
 根目录运行：
   python robot_common.py --status          # 只读状态
   python robot_common.py --request-control # 下使能时请求切换 TCP 控制模式
-  python robot_common.py --enable          # 使能，不发送运动指令
+  python robot_common.py --enable          # 仅请求使能，不设置坐标系或发送运动指令
 """
 
 import argparse
@@ -190,7 +190,7 @@ def main():
                     print("RobotMode reply:", dashboard.RobotMode())
                     print("GetErrorID reply:", dashboard.GetErrorID())
         return
-    with connect(config, for_movement=False) as (dashboard, _):
+    with connect(config, for_movement=False, select_frames=False) as (dashboard, _):
         enable_robot(dashboard)
     print("Robot enable command accepted.")
 

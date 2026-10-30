@@ -90,19 +90,34 @@ class EnableTests(unittest.TestCase):
                 self.assertEqual(self.run_recipe(file, home_ok=False), ["home"])
 
     def test_standalone_enable_uses_dashboard_connection(self):
-        events = []
-
-        @contextlib.contextmanager
-        def connection(config, for_movement):
-            self.assertFalse(for_movement)
-            yield Dashboard(events), None
-
-        with patch("sys.argv", ["robot_common.py", "--enable"]), \
-                patch.object(robot_common, "read_config", return_value={}), \
-                patch.object(robot_common, "connect", connection), \
-                contextlib.redirect_stdout(io.StringIO()):
-            robot_common.main()
-        self.assertEqual(events, ["enable"])
+        config = {"robot_ip": "192.0.2.1", "user_index": 0, "tool_index": 0}
+        for reply in ("0,{},EnableRobot();", "-1,{},EnableRobot();"):
+            with self.subTest(reply=reply):
+                events = []
+                dashboard = Dashboard(events, reply)
+                # Reproduce controllers rejecting frame selection before enable.
+                dashboard.User = Mock(__name__="User", return_value="-1,{},User(0);")
+                dashboard.Tool = Mock(__name__="Tool", return_value="-1,{},Tool(0);")
+                sdk = Mock()
+                sdk.RobotControl.return_value = dashboard
+                output = io.StringIO()
+                with patch("sys.argv", ["robot_common.py", "--enable"]), \
+                        patch.object(robot_common, "read_config", return_value=config), \
+                        patch.object(robot_common, "load_sdk", return_value=sdk), \
+                        contextlib.redirect_stdout(output):
+                    if reply.startswith("0,"):
+                        robot_common.main()
+                        self.assertIn("Robot enable command accepted.", output.getvalue())
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "EnableRobot failed"):
+                            robot_common.main()
+                        self.assertNotIn("accepted", output.getvalue())
+                self.assertEqual(events, ["enable"])
+                dashboard.User.assert_not_called()
+                dashboard.Tool.assert_not_called()
+                sdk.Motion.assert_not_called()
+                sdk.DobotConnection.assert_called_once_with("192.0.2.1", 29999)
+                sdk.DobotConnection.return_value.disconnect.assert_called_once()
 
     def test_status_bypasses_frame_selection_and_does_not_enable(self):
         dashboard = Mock()

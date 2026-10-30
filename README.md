@@ -73,6 +73,8 @@ python teach_point.py HOME
 python robot_common.py --enable
 ```
 
+`--enable` sends only `EnableRobot()` on the command connection. It does not select User/Tool frames, so a rejected frame-selection command cannot prevent the enable request from being sent. Teaching and motion still select their configured frames.
+
 Teaching reads a stationary pose and joints; enter `SAVE` to update the shared JSON. It resets all workflow verification flags. New waypoint names are supported, and `--list` lists existing points. Recipe `--teach POINT` commands remain aliases. Segmented recipes require only HOME in the point table; other existing taught points are preserved for future use.
 
 To physically inspect a saved waypoint, move the robot to it:
