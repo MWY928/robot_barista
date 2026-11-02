@@ -111,7 +111,9 @@ def adaptive_retime_recording(original_data, config, name=None, *, target_speedu
     ServoJ grid and start/stop acceleration checks.
     """
     config = copy.deepcopy(config)
-    config.setdefault("trajectory_settings", {})["playback_speed"] = 1
+    playback_speed = trajectory_player.limits_for(config)["playback_speed"]
+    if playback_speed > 1:
+        return fast_retime_recording(original_data, config, name)
     trajectory_player.validate_recording(original_data, config, check_dynamics=False)
     if not math.isfinite(target_speedup) or target_speedup <= 1:
         raise ValueError("target_speedup must be greater than 1")
@@ -152,7 +154,7 @@ def adaptive_retime_recording(original_data, config, name=None, *, target_speedu
         data["time_processing"] = {
             "method": "adaptive_segment_time_retiming_v1",
             "target_speedup": target_speedup,
-            "validated_playback_speed": 1,
+            "validated_playback_speed": playback_speed,
             "target_duration_ratio": 1 / target_speedup,
             "duration_ratio": t / old_duration,
             "difficulty_weights": "joint/tcp/orientation speed and adjacent velocity change",
@@ -166,6 +168,66 @@ def adaptive_retime_recording(original_data, config, name=None, *, target_speedu
             continue
         return data
     raise ValueError(f"Cannot adaptively retime within unchanged limits: {last_error}")
+
+
+def fast_retime_recording(original_data, config, name=None):
+    """Fastest passing bounded grid candidate, not a global optimum.
+
+    Keep every vertex, including stationary samples. Use speed-derived local
+    durations and enlarge corner intervals for acceleration; full validation
+    remains authoritative (including paired interpolation and servo phase).
+    """
+    trajectory_player.validate_recording(original_data, config, check_dynamics=False)
+    limits = trajectory_player.limits_for(config)
+    speed = limits["playback_speed"]
+    source = original_data["samples"]
+    delta = [[y-x for x, y in zip(a["joint"], b["joint"])]
+             for a, b in zip(source, source[1:])]
+    durations = []
+    for a, b, dq in zip(source, source[1:], delta):
+        errors = trajectory_player.state_errors(a, b)
+        durations.append(max(.001, max(map(abs, dq))/limits["max_joint_speed_deg_s"],
+                             errors["position_mm"]/limits["max_cartesian_speed_mm_s"],
+                             errors["orientation_deg"]/limits["max_orientation_speed_deg_s"]))
+    for _ in range(100):
+        factors = [1.] * len(durations)
+        for i in range(1, len(durations)):
+            acceleration = max(abs(delta[i][j]/durations[i]-delta[i-1][j]/durations[i-1])
+                               for j in range(6))/((durations[i]+durations[i-1])/2)
+            factor = math.sqrt(acceleration/limits["max_joint_acceleration_deg_s2"])
+            factors[i] = max(factors[i], factor)
+            factors[i-1] = max(factors[i-1], factor)
+        if max(factors) <= 1.000001:
+            break
+        durations = [dt*f for dt, f in zip(durations, factors)]
+    last_error = "no candidate"
+    for step in range(901):
+        multiplier = 1. + step*.01
+        samples = copy.deepcopy(source)
+        samples[0]["t"] = 0.
+        t = 0.
+        for sample, dt in zip(samples[1:], durations):
+            t += dt * multiplier * speed
+            sample["t"] = t
+        samples = paired_resample(samples, 1., limits["max_sample_gap_s"])
+        data = make_recording(copy.deepcopy(original_data), samples,
+                              name or original_data.get("name", "recording"))
+        data["time_processing"] = {
+            "method": "speed_corner_adaptive_grid_v2", "validated_playback_speed": speed,
+            "multiplier": multiplier, "grid_step": .01,
+            "optimality": "first passing ascending grid candidate; not global optimum",
+            "source_duration_s": source[-1]["t"], "source_sample_count": len(source),
+            "all_original_vertices_retained": True,
+            "pose_interpolation": "paired linear approximation; NOT FK",
+        }
+        try:
+            trajectory_player.validate_recording(data, config)
+        except ValueError as exc:
+            last_error = str(exc)
+            continue
+        return data
+    raise ValueError(f"Cannot retime at playback_speed={speed:g} within unchanged limits "
+                     f"and bounded search (not a proof of physical impossibility): {last_error}")
 
 
 def dynamics_report(data, config):
@@ -203,7 +265,9 @@ def dynamics_report(data, config):
             report["servo_joint_acceleration_deg_s2"],
             max(abs(a-b)/period for a,b in zip(velocity, next_velocity)))
         previous, velocity = joint, next_velocity
-    report.update(duration_s=trajectory.duration, sample_count=len(trajectory.samples),
+    report.update(duration_s=trajectory.duration,
+                  playback_duration_s=trajectory.duration/limits["playback_speed"],
+                  sample_count=len(trajectory.samples),
                   servo_cycles=count, max_sample_gap_s=max(b-a for a,b in zip(trajectory.times, trajectory.times[1:])))
     return report
 

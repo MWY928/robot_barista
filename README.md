@@ -218,7 +218,7 @@ python trajectory_player.py pick_cup --commissioning
 | `start_orientation_margin_deg` | 3 | Maximum rotation-angle error allowed for a start correction |
 | `start_joint_margin_deg` | 5 | Maximum error of any joint; revolutions are not wrapped |
 | `arrival_position_mm` / `arrival_orientation_deg` / `arrival_joint_deg` | 0.5 / 0.5 / 1 | Required arrival tolerances |
-| `playback_speed` | 0.35 | Playback ratio relative to the selected file's timeline, at most 1 |
+| `playback_speed` | 0.35 | Playback ratio relative to the selected file's timeline, positive and at most 4; full dynamics validation still required |
 | `servo_period_s` | 0.04 | Fixed command period in seconds |
 
 Before every segment, the player checks the actual live pose, joints, and coordinate frames. A start already within arrival tolerance needs no correction. A larger error within all three start margins triggers a `MovL` correction and another actual-state check. Any exceeded margin aborts the workflow.

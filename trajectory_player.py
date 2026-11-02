@@ -60,8 +60,8 @@ def limits_for(config):
             raise ValueError(f"trajectory_settings.{key} must be a positive finite number.")
     if not 0.02 <= limits["servo_period_s"] <= 0.1:
         raise ValueError("servo_period_s must be between 0.02 and 0.1 for this V4 player.")
-    if limits["playback_speed"] > 1:
-        raise ValueError("playback_speed must be <= 1 (no faster than the recorded timing).")
+    if limits["playback_speed"] > 4:
+        raise ValueError("playback_speed must be <= 4 for this V4 player.")
     if limits["max_command_lag_s"] > limits["servo_period_s"]:
         raise ValueError("max_command_lag_s must not exceed one servo period.")
     if not 20 <= limits["servo_lookahead_time"] <= 100 or not 200 <= limits["servo_gain"] <= 1000:
