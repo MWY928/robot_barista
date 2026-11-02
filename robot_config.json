@@ -156,6 +156,9 @@
     "servo_gain": 500.0
   },
   "trajectories": {
+    "cup_to_coffee_speed1": {
+      "file": "trajectories/cup_to_coffee_speed1.json"
+    },
     "cup_to_coffee_idle_trimmed": {
       "file": "trajectories/cup_to_coffee_idle_trimmed.json"
     },

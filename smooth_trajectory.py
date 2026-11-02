@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """用途：离线重分配轨迹时间、降低指令加速度，生成新副本，不连接机械臂。
-处理：只调整时间戳，保留全部原始关节/位姿配对及状态，不做几何滤波或重采样，
+处理：调整时间戳，保留全部原始关节/位姿配对及状态；必要时成对线性补点，不做几何滤波，
 并用 trajectory_player.load_trajectory() 的同一套校验验证新轨迹。
 根目录运行（输出新文件，不覆盖原轨迹）：
   python smooth_trajectory.py pick_cup pick_cup_smooth
@@ -21,6 +21,124 @@ import trajectory_player
 DEFAULT_RATE = 50.0
 DEFAULT_SIGMA = 3.0
 MAX_STRETCH = 10.0
+MAX_OUTPUT_SAMPLES = 100000
+
+
+def paired_resample(source, stretch, max_gap, max_samples=MAX_OUTPUT_SAMPLES):
+    """Keep every original vertex; split only stretched intervals, never raw gaps.
+
+    Caller must structurally validate the original first. Synthetic pose is an
+    approximate linear companion of joint interpolation, NOT forward kinematics.
+    No synthetic controller timestamp/status is claimed to be measured feedback.
+    """
+    pieces = [max(1, math.ceil((b["t"]-a["t"])*stretch/(max_gap*.99)))
+              for a, b in zip(source, source[1:])]
+    if 1 + sum(pieces) > max_samples:
+        raise ValueError("Cannot retime: output sample budget exceeded")
+    result = [copy.deepcopy(source[0])]
+    for index, (a, b, count) in enumerate(zip(source, source[1:], pieces)):
+        start, end = a["t"]*stretch, b["t"]*stretch
+        for part in range(1, count):
+            fraction = part/count
+            result.append({
+                "t": start + (end-start)*fraction,
+                "joint": [x+(y-x)*fraction for x, y in zip(a["joint"], b["joint"])],
+                "pose": [x+(y-x)*fraction for x, y in zip(a["pose"], b["pose"])],
+                "interpolation": {"source_segment": index, "fraction": fraction,
+                                  "pose_approximate_not_fk": True},
+            })
+        sample = copy.deepcopy(b)
+        sample["t"] = end
+        result.append(sample)
+    return result
+
+
+def retime_paired_recording(original_data, config, name=None, *, max_stretch=MAX_STRETCH,
+                           stretch_step=.025, max_samples=MAX_OUTPUT_SAMPLES):
+    """Bounded ascending uniform-time search, with unchanged player validation.
+
+    First passing grid candidate, not a continuous/global optimum: servo phase
+    and resampling make acceptance non-monotone. At most 1001 candidates,
+    100000 samples and the player's 100000 servo cycles per candidate.
+    Internal pauses and all original paired vertices are retained, not smoothed.
+    """
+    trajectory_player.validate_recording(original_data, config, check_dynamics=False)
+    if (not math.isfinite(max_stretch) or not 1 <= max_stretch <= MAX_STRETCH
+            or not math.isfinite(stretch_step) or stretch_step <= 0
+            or type(max_samples) is not int or not 2 <= max_samples <= MAX_OUTPUT_SAMPLES):
+        raise ValueError("Invalid retiming bounds")
+    steps = math.ceil((max_stretch-1)/stretch_step)
+    if steps > 1000:
+        raise ValueError("Cannot retime: search budget exceeded")
+    limits = trajectory_player.limits_for(config)
+    source = original_data["samples"]
+    last_error = "no candidate"
+    for step in range(steps+1):
+        stretch = min(max_stretch, 1 + step*stretch_step)
+        if math.ceil(source[-1]["t"]*stretch/limits["playback_speed"] /
+                     limits["servo_period_s"]) > 100000:
+            last_error = "servo cycle budget exceeded"
+            break
+        samples = paired_resample(source, stretch, limits["max_sample_gap_s"], max_samples)
+        data = make_recording(copy.deepcopy(original_data), samples,
+                              name or original_data.get("name", "recording"))
+        data["time_processing"] = {
+            "method": "uniform_time_stretch_paired_linear_v1",
+            "uniform_stretch": stretch, "search_step": stretch_step,
+            "source_duration_s": source[-1]["t"], "source_sample_count": len(source),
+            "validated_playback_speed": limits["playback_speed"],
+            "pose_interpolation": "approximate linear paired pose; NOT FK",
+            "path_guarantee": "original vertices and piecewise linear joint path only; no jerk or collision guarantee",
+        }
+        data["pose_source"] = "Original recorded vertices; inserted poses approximate paired linear interpolation, NOT FK"
+        data["units"] = dict(data.get("units", {}), t="seconds (retimed playback timebase)")
+        try:
+            trajectory_player.validate_recording(data, config)
+        except ValueError as exc:
+            last_error = str(exc)
+            continue
+        return data
+    raise ValueError(f"Cannot retime within unchanged limits and computational bounds: {last_error}")
+
+
+def dynamics_report(data, config):
+    """Offline maxima, using the same actual ServoJ target grid as the player.
+
+    TCP/orientation are recorded/approximate pose metrics, not measured execution.
+    Validation always runs first, including initial/final rest commands.
+    """
+    trajectory = trajectory_player.validate_recording(data, config)
+    limits = trajectory_player.limits_for(config)
+    report = dict(sample_joint_speed_deg_s=0., sample_joint_acceleration_deg_s2=0.,
+                  tcp_speed_mm_s=0., orientation_speed_deg_s=0.,
+                  servo_joint_speed_deg_s=0., servo_joint_acceleration_deg_s2=0.)
+    previous_velocity = None
+    previous_dt = None
+    for a, b in zip(trajectory.samples, trajectory.samples[1:]):
+        dt = (b["t"]-a["t"])/limits["playback_speed"]
+        velocity = [(y-x)/dt for x,y in zip(a["joint"], b["joint"])]
+        report["sample_joint_speed_deg_s"] = max(report["sample_joint_speed_deg_s"], *map(abs, velocity))
+        if previous_velocity is not None:
+            acceleration = max(abs(x-y) for x,y in zip(velocity, previous_velocity))/((dt+previous_dt)/2)
+            report["sample_joint_acceleration_deg_s2"] = max(report["sample_joint_acceleration_deg_s2"], acceleration)
+        errors = trajectory_player.state_errors(a, b)
+        report["tcp_speed_mm_s"] = max(report["tcp_speed_mm_s"], errors["position_mm"]/dt)
+        report["orientation_speed_deg_s"] = max(report["orientation_speed_deg_s"], errors["orientation_deg"]/dt)
+        previous_velocity, previous_dt = velocity, dt
+    period = limits["servo_period_s"]
+    count = math.ceil(trajectory.duration/limits["playback_speed"]/period)
+    previous, velocity = trajectory.first["joint"], [0.]*6
+    for index in range(1, count+2):
+        joint = trajectory.joint_at(index*period*limits["playback_speed"])
+        next_velocity = [(b-a)/period for a,b in zip(previous, joint)]
+        report["servo_joint_speed_deg_s"] = max(report["servo_joint_speed_deg_s"], *map(abs, next_velocity))
+        report["servo_joint_acceleration_deg_s2"] = max(
+            report["servo_joint_acceleration_deg_s2"],
+            max(abs(a-b)/period for a,b in zip(velocity, next_velocity)))
+        previous, velocity = joint, next_velocity
+    report.update(duration_s=trajectory.duration, sample_count=len(trajectory.samples),
+                  servo_cycles=count, max_sample_gap_s=max(b-a for a,b in zip(trajectory.times, trajectory.times[1:])))
+    return report
 
 
 def idle_bounds(samples):
@@ -155,7 +273,9 @@ def retime_recording(original_data, config, name=None):
             last_error = exc
             continue
         return data
-    raise ValueError(f"Cannot retime within unchanged dynamics/gap limits: {last_error or 'gap bound'}")
+    # Preserve successful legacy recorder results; only use bounded paired
+    # resampling when timestamp-only retiming cannot pass the unchanged checks.
+    return retime_paired_recording(original_data, config, name)
 
 
 def smooth_trajectory(source_name, output_name, config_path=CONFIG_FILE,
