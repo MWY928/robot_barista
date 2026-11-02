@@ -4,6 +4,7 @@
   single_trajectory()：连接、确认、使能并执行单段；align_only=True 只对齐起点。
   TrajectoryPlayer.check_start()：只检查起点；ensure_start()：可能执行 MovL 对齐。
   TrajectoryPlayer.play()：自动对齐、ServoJ 回放并等待实际到位。
+  --reverse：调试时从终点反向回放，便于往返观察；仍须 --commissioning，不自动循环。
 根目录运行（以下两条都会运动；--commissioning 允许试跑未验证轨迹）：
   python trajectory_player.py pick_cup --commissioning --align-only
   python trajectory_player.py pick_cup --commissioning
@@ -470,8 +471,9 @@ def single_trajectory(name, config=None, *, commissioning=False, align_only=Fals
 
     Raises on invalid data, a bad start, feedback faults or failed arrival.
     commissioning=True allows a take whose replay_verified flag is false.
-    reverse=True starts at the former endpoint and always requires commissioning:
-    forward physical verification does not verify the reverse motion.
+    reverse=True is a debugging aid for inspecting one take back and forth,
+    starting at its former endpoint; it does not loop or add a recipe return.
+    It always requires commissioning: forward verification does not verify reverse.
     This function moves real hardware, asks for confirmation and does not
     change verification flags or automatically disable the robot on exit.
     """
@@ -531,7 +533,7 @@ def main():
     parser.add_argument("--commissioning", action="store_true", help="allow an unverified take for physical validation")
     parser.add_argument("--align-only", action="store_true", help="check and align to the recorded start, then finish")
     parser.add_argument("--reverse", action="store_true",
-                        help="play backwards from the former endpoint; requires --commissioning even for verified takes")
+                        help="debug one take backwards from its endpoint; requires --commissioning; does not loop")
     args = parser.parse_args()
     single_trajectory(args.name, read_config(args.config), commissioning=args.commissioning,
                       align_only=args.align_only, reverse=args.reverse)

@@ -15,6 +15,7 @@ Ice Americano: `HOME -> pick_cup -> CUP_RECEIVE -> cup_to_ice -> ICE_POS -> ice_
 - `recipe_common.py`: offline workflow inspection and shared CLI helpers.
 - `Americano/`, `IceAmericano/`: recipe `PLAN` definitions, dispenser waits, and `check_trajectories()` functions.
 - `teach_point.py`, `robot_common.py`: shared point teaching, connections, and enabling.
+- `point_path.py`: Enter-key point capture and sequential, controller-planned MovL playback.
 - `trajectories/`: shared recordings and recording instructions.
 - `TCP-IP-Python-V4-feature-v4-optimization/`: downloaded [official V4 SDK](https://github.com/Dobot-Arm/TCP-IP-Python-V4/tree/feature/v4-optimization), containing `dobot_sdk/` and its license.
 
@@ -99,6 +100,36 @@ python teach_point.py --move CUP_RECEIVE --linear --speed 5
 ```
 
 This reads the saved point from `robot_config.json`, displays its values, and asks for `Y` before enabling and moving. The default uses V4 `MovJ(joint={...})` to restore saved joints. `--linear` explicitly uses `MovL(pose={...})` with the configured User/Tool frames, matching the recipes' precise point approaches. Actual joints, TCP arrival, and queue completion are checked using live feedback. Position at the intended approach first and verify the entire chosen path; neither method avoids obstacles. The command leaves saved data intact and the robot enabled.
+
+## Manual multi-point MovL paths
+
+Use `point_path.py` to teach a new path as a dozen or more selected waypoints. It stores independent `point_paths/NAME.json` files; it does not modify existing timed recordings or their recipe mappings.
+
+```powershell
+python point_path.py record cup_route
+```
+
+Prepare matching Tool/User frames and teaching/drag mode on the robot first. Move to a waypoint, stop, and **press Enter once** to capture it. Each captured point is immediately saved with its joint angles and TCP pose. Type `u` then Enter to undo the last point, or `q` then Enter to finish; Ctrl+C also finishes. At least two points are required. Recording only reads feedback on `30004`; it does not enable or command motion. A feedback/frame failure leaves an incomplete file that cannot be replayed. Existing names are never overwritten.
+
+Inspect and replay from the repository root:
+
+```powershell
+python point_path.py show cup_route                       # Offline inspection
+python point_path.py play cup_route --speed 10            # PHYSICAL MOTION
+python point_path.py play cup_route --speed 10 --step     # Confirm every MovL
+python point_path.py play cup_route --speed 10 --reverse  # Debug the reverse direction once
+```
+
+Before playback, exit drag mode and position near the selected start (the last recorded point when reversing). The script checks frames/start state before enabling, asks for motion confirmation, and sends ordinary V4 `MovL` commands with `cp=0`. It waits for command completion and actual arrival at each point. It leaves the robot enabled on exit, matching the existing point teaching tool. `--speed` is the global speed percentage (1–100), defaulting to `speed_factor`; recorded timing, `playback_speed`, ServoJ resampling and the timed-recording acceleration estimator are not used for this format. The controller plans the individual MovL moves.
+
+This version stops at every waypoint. The path between selected poses is a controller-planned straight segment, so include withdrawal and corner points: it does not reproduce the hand's unrecorded motion between points. Reverse is for debugging the same path in the opposite direction, with confirmation; it does not automatically loop or become a production return route.
+
+Other scripts can call the same module entry point (this enables and moves the robot, with confirmation):
+
+```python
+from point_path import play_point_path
+final_state = play_point_path("cup_route", speed=10)
+```
 
 ## Record shared segments
 
@@ -205,6 +236,8 @@ The same entry point is available from the terminal:
 python trajectory_player.py pick_cup --commissioning --align-only
 python trajectory_player.py pick_cup --commissioning
 ```
+
+For debugging a timed recording back and forth, `--reverse --commissioning` starts from its former endpoint and plays once in reverse. It validates that direction separately, leaves the source file unchanged, and does not automatically loop or add a recipe return path.
 
 `single_trajectory()` loads the actual mapped recording, checks live state before enabling, confirms motion with the operator, aligns within the shared margins, plays, and checks the endpoint. Position near the recorded start first; larger errors raise an exception. It returns the final feedback state and leaves verification flags unchanged. Enable state is not automatically cleared on exit.
 
