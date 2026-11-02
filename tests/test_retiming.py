@@ -24,6 +24,39 @@ def take():
 
 
 class RetimingTests(unittest.TestCase):
+    def test_speed_two_bounds_and_adaptive_validation(self):
+        config = {"trajectory_settings": {"playback_speed": 2}}
+        self.assertEqual(player.limits_for(config)["playback_speed"], 2)
+        for value in (0, -1, True, float("nan"), float("inf"), 4.01):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                player.limits_for({"trajectory_settings": {"playback_speed": value}})
+        raw = take()
+        before = copy.deepcopy(raw)
+        output = smooth.adaptive_retime_recording(raw, config)
+        self.assertEqual(raw, before)
+        self.assertEqual(config["trajectory_settings"], {"playback_speed": 2})
+        self.assertEqual(output["time_processing"]["validated_playback_speed"], 2)
+        player.validate_recording(output, config)
+        originals = iter(output["samples"])
+        for source in raw["samples"]:
+            vertex = next(s for s in originals
+                          if s.get("controller_timestamp_raw") == source["controller_timestamp_raw"])
+            self.assertEqual(vertex["joint"], source["joint"])
+            self.assertEqual(vertex["pose"], source["pose"])
+
+    def test_speed_two_does_not_bypass_dynamics(self):
+        raw = take()
+        raw["samples"][1]["joint"] = [1000]*6
+        with self.assertRaisesRegex(ValueError, "speed limit"):
+            player.validate_recording(raw, {"trajectory_settings": {"playback_speed": 2}})
+
+    def test_generated_speed_two_trajectory(self):
+        config = read_config()
+        config["trajectory_settings"]["playback_speed"] = 2
+        result = player.load_trajectory("cup_to_coffee_speed2_adaptive_v2", config)
+        self.assertEqual(result.data["time_processing"]["validated_playback_speed"], 2)
+        self.assertFalse(result.data["replay_verified"])
+
     def setUp(self):
         guard = patch("socket.create_connection", side_effect=AssertionError("No hardware"))
         guard.start()

@@ -188,6 +188,9 @@
     },
     "cup_to_coffee_speed1_adaptive15_safe": {
       "file": "trajectories/cup_to_coffee_speed1_adaptive15_safe.json"
+    },
+    "cup_to_coffee_speed2_adaptive_v2": {
+      "file": "trajectories/cup_to_coffee_speed2_adaptive_v2.json"
     }
   }
 }
