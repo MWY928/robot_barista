@@ -57,6 +57,28 @@ class RetimingTests(unittest.TestCase):
         self.assertEqual(result.data["time_processing"]["validated_playback_speed"], 2)
         self.assertFalse(result.data["replay_verified"])
 
+    def test_generated_speed_three_preserves_source_and_passes(self):
+        config = read_config()
+        config["trajectory_settings"]["playback_speed"] = 3
+        result = player.load_trajectory("cup_to_coffee_speed3_adaptive_v2", config)
+        self.assertEqual(result.data["time_processing"]["validated_playback_speed"], 3)
+        self.assertFalse(result.data["replay_verified"])
+        config["trajectory_settings"]["playback_speed"] = 2
+        source = player.load_trajectory("cup_to_coffee_speed2_adaptive_v2", config)
+        remaining = iter(result.samples)
+        for original in source.samples:
+            expected = {k: v for k, v in original.items() if k != "t"}
+            self.assertTrue(any(
+                {k: v for k, v in sample.items() if k != "t"} == expected
+                for sample in remaining), "Original paired sample lost or changed")
+        for index in (0, -1):
+            for key in ("joint", "pose"):
+                self.assertEqual(result.samples[index][key], source.samples[index][key])
+        self.assertGreaterEqual(len(result.samples), len(source.samples))
+        for sample in result.samples:
+            if "interpolation" in sample:
+                self.assertTrue(sample["interpolation"]["pose_approximate_not_fk"])
+
     def setUp(self):
         guard = patch("socket.create_connection", side_effect=AssertionError("No hardware"))
         guard.start()

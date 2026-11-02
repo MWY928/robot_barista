@@ -144,7 +144,7 @@
     "command_timeout_s": 2.0,
     "settle_joint_speed_deg_s": 0.5,
     "servo_period_s": 0.04,
-    "playback_speed": 2,
+    "playback_speed": 3,
     "max_command_lag_s": 0.04,
     "max_tracking_error_deg": 5.0,
     "max_sample_gap_s": 0.2,
@@ -191,6 +191,9 @@
     },
     "cup_to_coffee_speed2_adaptive_v2": {
       "file": "trajectories/cup_to_coffee_speed2_adaptive_v2.json"
+    },
+    "cup_to_coffee_speed3_adaptive_v2": {
+      "file": "trajectories/cup_to_coffee_speed3_adaptive_v2.json"
     }
   }
 }
