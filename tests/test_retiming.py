@@ -152,6 +152,17 @@ class RetimingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Cannot retime"):
             smooth.retime_paired_recording(raw, {}, max_stretch=1)
 
+    def test_adaptive_retime_keeps_vertices_and_passes_player(self):
+        raw = take()
+        config = {"trajectory_settings": {"playback_speed": 1}}
+        output = smooth.adaptive_retime_recording(raw, config, "adaptive")
+        player.validate_recording(output, config)
+        self.assertEqual(len(output["samples"]), len(raw["samples"]))
+        self.assertLess(output["recorded_duration_s"], raw["samples"][-1]["t"])
+        self.assertEqual(output["samples"][0]["joint"], raw["samples"][0]["joint"])
+        self.assertEqual(output["samples"][-1]["pose"], raw["samples"][-1]["pose"])
+        self.assertEqual(output["time_processing"]["target_speedup"], 1.5)
+
 
 if __name__ == "__main__":
     unittest.main()

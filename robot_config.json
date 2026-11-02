@@ -133,8 +133,8 @@
   },
   "trajectory_settings": {
     "start_position_margin_mm": 50.0,
-    "start_orientation_margin_deg": 6.0,
-    "start_joint_margin_deg": 6.0,
+    "start_orientation_margin_deg": 120.0,
+    "start_joint_margin_deg": 120.0,
     "arrival_position_mm": 0.5,
     "arrival_orientation_deg": 0.5,
     "arrival_joint_deg": 1.0,
@@ -149,7 +149,7 @@
     "max_tracking_error_deg": 5.0,
     "max_sample_gap_s": 0.2,
     "max_joint_speed_deg_s": 30.0,
-    "max_joint_acceleration_deg_s2": 90.0,
+    "max_joint_acceleration_deg_s2": 130,
     "max_cartesian_speed_mm_s": 100.0,
     "max_orientation_speed_deg_s": 30.0,
     "servo_lookahead_time": 50.0,
@@ -185,6 +185,9 @@
     },
     "pick_cup_smooth_trimmed": {
       "file": "trajectories/pick_cup_smooth_trimmed.json"
+    },
+    "cup_to_coffee_speed1_adaptive15_safe": {
+      "file": "trajectories/cup_to_coffee_speed1_adaptive15_safe.json"
     }
   }
 }

@@ -22,6 +22,7 @@ DEFAULT_RATE = 50.0
 DEFAULT_SIGMA = 3.0
 MAX_STRETCH = 10.0
 MAX_OUTPUT_SAMPLES = 100000
+ADAPTIVE_TARGET_SPEEDUP = 1.5
 
 
 def paired_resample(source, stretch, max_gap, max_samples=MAX_OUTPUT_SAMPLES):
@@ -99,6 +100,72 @@ def retime_paired_recording(original_data, config, name=None, *, max_stretch=MAX
             continue
         return data
     raise ValueError(f"Cannot retime within unchanged limits and computational bounds: {last_error}")
+
+
+def adaptive_retime_recording(original_data, config, name=None, *, target_speedup=ADAPTIVE_TARGET_SPEEDUP):
+    """Retiming that spends time on corners and high-speed/stop transitions.
+
+    This changes timestamps only.  Every recorded vertex remains, and any
+    required gap repair uses paired linear joint/pose samples.  Candidates are
+    always checked by the player's complete validator, including the fixed
+    ServoJ grid and start/stop acceleration checks.
+    """
+    config = copy.deepcopy(config)
+    config.setdefault("trajectory_settings", {})["playback_speed"] = 1
+    trajectory_player.validate_recording(original_data, config, check_dynamics=False)
+    if not math.isfinite(target_speedup) or target_speedup <= 1:
+        raise ValueError("target_speedup must be greater than 1")
+    source = original_data["samples"]
+    old_duration = source[-1]["t"]
+    # A dimensionless difficulty score: velocity, corner change, and paired
+    # TCP/orientation motion.  The floor keeps quiet segments near 1.5x.
+    scores = []
+    velocities = []
+    for a, b in zip(source, source[1:]):
+        dt = b["t"] - a["t"]
+        joint = [abs(y-x)/dt for x, y in zip(a["joint"], b["joint"])]
+        state = trajectory_player.state_errors(a, b)
+        velocities.append(joint)
+        scores.append(max(max(joint)/30, state["position_mm"]/100,
+                            state["orientation_deg"]/30))
+    for i in range(1, len(scores)):
+        scores[i] = max(scores[i], min(1.5, max(abs(velocities[i][j]-velocities[i-1][j])
+                                                for j in range(6))/90))
+    max_score = max(1., max(scores))
+    weights = [1. + .5 * min(1., score/max_score) for score in scores]
+    # Search the fastest global multiplier that passes all unchanged limits.
+    base = [((b["t"]-a["t"]) * weights[i]) for i, (a, b) in enumerate(zip(source, source[1:]))]
+    last_error = "no candidate"
+    desired_ratio = 1 / target_speedup
+    candidates = sorted((x/1000 for x in range(350, 1001, 5)),
+                        key=lambda value: abs(value * sum(base) / old_duration - desired_ratio))
+    for multiplier in candidates:
+        samples = copy.deepcopy(source)
+        t = 0.
+        samples[0]["t"] = 0.
+        for interval, sample in zip(base, samples[1:]):
+            t += interval * multiplier
+            sample["t"] = t
+        if t / old_duration > 1.05:  # do not accidentally make a slower take
+            continue
+        data = make_recording(copy.deepcopy(original_data), samples, name or original_data.get("name", "recording"))
+        data["time_processing"] = {
+            "method": "adaptive_segment_time_retiming_v1",
+            "target_speedup": target_speedup,
+            "validated_playback_speed": 1,
+            "target_duration_ratio": 1 / target_speedup,
+            "duration_ratio": t / old_duration,
+            "difficulty_weights": "joint/tcp/orientation speed and adjacent velocity change",
+            "all_original_vertices_retained": True,
+            "pose_interpolation": "none unless paired gap repair is required; NOT FK",
+        }
+        try:
+            trajectory_player.validate_recording(data, config)
+        except ValueError as exc:
+            last_error = str(exc)
+            continue
+        return data
+    raise ValueError(f"Cannot adaptively retime within unchanged limits: {last_error}")
 
 
 def dynamics_report(data, config):
@@ -303,7 +370,7 @@ def smooth_trajectory(source_name, output_name, config_path=CONFIG_FILE,
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     from record_trajectory import save_recording
-    data = retime_recording(original_data, config, output_name)
+    data = adaptive_retime_recording(original_data, config, output_name)
     save_recording(data, output_path)
     chosen = (data["recorded_duration_s"]/original[-1]["t"], len(data["samples"]), data["recorded_duration_s"])
 
